@@ -3,34 +3,34 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="期权策略模拟器", layout="wide")
+st.set_page_config(page_title="Options Strategy Simulator", layout="wide")
 
-st.title("🧠 期权策略模拟器 - AMD 示例")
+st.title("🧠 Options Strategy Simulator - AMD Example")
 
-# 初始化
+# Initialization
 if "strategies" not in st.session_state:
     st.session_state.strategies = []
 if "positions" not in st.session_state:
     st.session_state.positions = []
 
-# -------------------- 左侧：策略选择与持仓录入 --------------------
+# -------------------- Sidebar: Strategy Selection and Position Input --------------------
 with st.sidebar:
-    st.header("策略与持仓配置")
-    strategy_type = st.selectbox("选择策略", ["Sell Put", "Sell Call", "Bull Call Spread", "Straddle"])
+    st.header("Strategy and Position Configuration")
+    strategy_type = st.selectbox("Select Strategy", ["Sell Put", "Sell Call", "Bull Call Spread", "Straddle"])
 
-    st.subheader("参数输入")
-    underlying_price = st.number_input("当前标的价格 ($)", value=166.47)
-    strike1 = st.number_input("执行价 1 ($)", value=160.0)
+    st.subheader("Parameter Input")
+    underlying_price = st.number_input("Current Underlying Price ($)", value=166.47)
+    strike1 = st.number_input("Strike Price 1 ($)", value=160.0)
     strike2 = None
     if strategy_type in ["Bull Call Spread", "Straddle"]:
-        strike2 = st.number_input("执行价 2 ($)", value=180.0)
+        strike2 = st.number_input("Strike Price 2 ($)", value=180.0)
 
-    expiry_days = st.slider("到期天数", 7, 60, 30)
-    option_price1 = st.number_input("期权价格 1 ($)", value=2.3)
-    option_price2 = st.number_input("期权价格 2 ($)", value=0.8) if strike2 else 0.0
-    quantity = st.number_input("张数 (每张=100股)", value=1, step=1)
+    expiry_days = st.slider("Days to Expiration", 7, 60, 30)
+    option_price1 = st.number_input("Option Price 1 ($)", value=2.3)
+    option_price2 = st.number_input("Option Price 2 ($)", value=0.8) if strike2 else 0.0
+    quantity = st.number_input("Number of Contracts (100 shares each)", value=1, step=1)
 
-    submit = st.button("➕ 添加到策略组合")
+    submit = st.button("➕ Add to Strategy Portfolio")
 
     if submit:
         st.session_state.strategies.append({
@@ -45,17 +45,17 @@ with st.sidebar:
         })
 
     st.divider()
-    st.subheader("已有持仓录入")
-    cost_basis = st.number_input("股票持仓成本 ($)", value=165.0)
-    shares = st.number_input("持仓股数", value=100)
-    if st.button("📥 添加持仓"):
+    st.subheader("Existing Position Entry")
+    cost_basis = st.number_input("Stock Cost Basis ($)", value=165.0)
+    shares = st.number_input("Number of Shares Held", value=100)
+    if st.button("📥 Add Position"):
         st.session_state.positions.append({"cost": cost_basis, "shares": shares})
 
-# -------------------- 中央区域：策略展示与收益计算 --------------------
+# -------------------- Main Area: Strategy Display and Profit Calculation --------------------
 col1, col2 = st.columns([3, 2])
 
 with col1:
-    st.subheader("📊 StrategyProfitChart")
+    st.subheader("📊 Strategy Profit Chart")
     spot_range = np.linspace(underlying_price * 0.7, underlying_price * 1.3, 200)
     total_pnl = np.zeros_like(spot_range)
 
@@ -99,51 +99,51 @@ with col1:
     for pos in st.session_state.positions:
         stock_pnl = (spot_range - pos["cost"]) * pos["shares"]
         total_pnl += stock_pnl
-        plt.plot(spot_range, stock_pnl, linestyle="--", label="PositionProfit")
+        plt.plot(spot_range, stock_pnl, linestyle="--", label="Position P&L")
 
-    plt.plot(spot_range, total_pnl, label="PortfolioOverallProfit", color="black", linewidth=2)
+    plt.plot(spot_range, total_pnl, label="Total Portfolio P&L", color="black", linewidth=2)
     plt.axhline(0, color="gray", linestyle="--")
-    plt.axvline(underlying_price, color="red", linestyle=":", label="当前价格")
+    plt.axvline(underlying_price, color="red", linestyle=":", label="Current Price")
     plt.legend()
-    plt.xlabel("SymbolPrice")
-    plt.ylabel("StrategyGainLoss ($)")
+    plt.xlabel("Underlying Price at Expiration")
+    plt.ylabel("Strategy Profit/Loss ($)")
     st.pyplot(plt.gcf())
     plt.clf()
 
 with col2:
-    st.subheader("📋 StrategyDetailScore")
+    st.subheader("📋 Strategy Details and Scoring")
     df = pd.DataFrame(st.session_state.strategies)
     if not df.empty:
         df_display = df.copy()
 
-        # 转换价格与执行价为数值，防止非数字出错
+        # Convert prices and strikes to numeric to avoid errors
         df_display["price1"] = pd.to_numeric(df_display["price1"], errors="coerce")
         df_display["price2"] = pd.to_numeric(df_display["price2"], errors="coerce").fillna(0.0)
 
         df_display["strike1"] = pd.to_numeric(df_display["strike1"], errors="coerce")
         df_display["strike2"] = pd.to_numeric(df_display["strike2"], errors="coerce").fillna(0.0)
 
-        # 计算成本（price1 - price2）* 100
+        # Calculate cost = (price1 - price2) * 100
         df_display["Cost"] = ((df_display["price1"] - df_display["price2"]).fillna(df_display["price1"])) * 100
 
-        # 计算最大收益
-        df_display["MaxProfit"] = np.where(
+        # Calculate max profit
+        df_display["Max Profit"] = np.where(
             df_display["type"] == "Bull Call Spread",
-            (df_display["strike2"] - df_display["strike1"]) * 100 - df_display["成本"],
+            (df_display["strike2"] - df_display["strike1"]) * 100 - df_display["Cost"],
             df_display["price1"] * 100
         )
 
-        # 防止成本为0导致除零错误
+        # Prevent division by zero
         df_display["Cost"] = df_display["Cost"].replace(0, np.nan)
 
-        # 计算回报率，空值用0代替
-        df_display["ReturnRatio"] = (df_display["MaxProfit"] / df_display["Cost"]).round(2).fillna(0.0)
+        # Calculate return rate, fill NA with 0
+        df_display["Return Rate"] = (df_display["Max Profit"] / df_display["Cost"]).round(2).fillna(0.0)
 
-        # 计算策略评分，简单加权示范
-        df_display["StrategyScore"] = (df_display["ReturnRatio"] * 0.6 + df_display["MaxProfit"] / 100 * 0.4).round(1)
+        # Calculate strategy score, simple weighted example
+        df_display["Strategy Score"] = (df_display["Return Rate"] * 0.6 + df_display["Max Profit"] / 100 * 0.4).round(1)
 
-        st.dataframe(df_display[["type", "strike1", "strike2", "Cost", "MaxProfit", "ReturnRatio", "StrategyScore"]])
+        st.dataframe(df_display[["type", "strike1", "strike2", "Cost", "Max Profit", "Return Rate", "Strategy Score"]])
     else:
-        st.info("尚未添加任何策略。")
+        st.info("No strategies added yet.")
 
-st.caption("⚠️ 本工具为教学与模拟用途，不构成投资建议。")
+st.caption("⚠️ This tool is for educational and simulation purposes only, not investment advice.")
