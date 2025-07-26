@@ -1,132 +1,120 @@
 import streamlit as st
 import yfinance as yf
-import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import date
+import pandas as pd
 
-# 设置页面
-st.set_page_config(page_title="Option Strategy Simulator", layout="wide")
+st.set_page_config(layout="wide")
+st.title("期权策略模拟器 with 策略筛选、交易成本 & 风险分析")
 
-# 用户输入
-symbol = st.sidebar.text_input("Enter Ticker", value="AMD")
-# expiry = st.sidebar.text_input("Option Expiry (YYYY-MM-DD)", value="2024-08-16")
-invest_limit = st.sidebar.number_input("Max Cost ($)", value=100.0)
-cost_per_trade = st.sidebar.number_input("Transaction Cost per Leg ($)", value=1.0)
-simulations = st.sidebar.slider("Monte Carlo Simulations", 1000, 20000, 5000)
-user_position = st.sidebar.text_area("User Holdings (e.g., CALL 110C +1, PUT 90P -1)")
-
-# 拉取数据
+# 用户输入标的股票代码
+symbol = st.text_input("输入标的股票代码 (如 AMD)", value="AMD").upper()
 data = yf.Ticker(symbol)
-available_expirations = data.options
 
-# 让用户选择到期日（推荐）
-expiry = st.selectbox("选择期权到期日", available_expirations)
-if expiry not in available_expirations:
-    st.error(f"错误：{expiry} 不是有效的到期日。请选择一个有效到期日。")
+# 显示可选的期权到期日
+try:
+    available_expirations = data.options
+    expiry = st.selectbox("选择期权到期日", available_expirations)
+except Exception as e:
+    st.error("未找到该股票的期权链，请确认股票代码是否正确")
     st.stop()
-    
-opt_chain = data.option_chain(expiry)
-calls = opt_chain.calls.copy()
-puts = opt_chain.puts.copy()
 
-# 添加 Greeks 占位符（模拟）
-calls['delta'] = np.random.uniform(0.3, 0.8, size=len(calls))
-calls['gamma'] = np.random.uniform(0.01, 0.15, size=len(calls))
-puts['delta'] = np.random.uniform(-0.8, -0.3, size=len(puts))
-puts['gamma'] = np.random.uniform(0.01, 0.15, size=len(puts))
+# 获取期权链数据
+try:
+    opt_chain = data.option_chain(expiry)
+    calls = opt_chain.calls
+    puts = opt_chain.puts
+except ValueError as ve:
+    st.error(str(ve))
+    st.stop()
 
-# 当前价格和蒙特卡洛模拟价格
-today_price = data.history(period="1d")['Close'].iloc[-1]
-mu, sigma = 0.0, 0.2
-prices = np.random.normal(loc=today_price * (1 + mu), scale=today_price * sigma, size=simulations)
+# 显示期权链数据
+with st.expander("📄 Call期权链"):
+    st.dataframe(calls[['strike', 'lastPrice', 'bid', 'ask', 'impliedVolatility', 'delta', 'gamma']])
 
-# 策略函数模板
+with st.expander("📄 Put期权链"):
+    st.dataframe(puts[['strike', 'lastPrice', 'bid', 'ask', 'impliedVolatility', 'delta', 'gamma']])
+
+# 用户输入现有持仓
+st.sidebar.subheader("📊 持仓信息")
+position_type = st.sidebar.selectbox("持仓类型", ["无持仓", "持有正股", "持有期权"])
+cost_basis = st.sidebar.number_input("成本价", value=0.0)
+shares_held = st.sidebar.number_input("持仓数量", value=0, step=1)
+
+# 模拟策略
+st.sidebar.subheader("📈 策略选择")
+strategy = st.sidebar.selectbox("选择策略", ["Bull Call Spread", "Sell Put", "Sell Call"])
+
+# 显示交易成本
+commission = st.sidebar.number_input("每笔交易手续费($)", value=1.0)
+
+# 策略函数
+
 def bull_call_spread(calls):
-    res = []
-    for i in range(len(calls)):
-        for j in range(i+1, len(calls)):
-            buy = calls.iloc[i]
-            sell = calls.iloc[j]
-            debit = buy['ask'] - sell['bid'] + 2 * cost_per_trade
-            if debit <= 0 or debit > invest_limit:
-                continue
-            max_profit = sell['strike'] - buy['strike'] - debit
-            breakeven = buy['strike'] + debit
-            pnl = np.piecewise(prices,
-                               [prices <= buy['strike'], (prices > buy['strike']) & (prices < sell['strike']), prices >= sell['strike']],
-                               [lambda x: -debit, lambda x: x - buy['strike'] - debit, lambda x: max_profit])
-            pos_prob = np.mean(pnl > 0)
-            avg_return = np.mean(pnl / debit)
-            res.append({
-                'type': 'Bull Call Spread',
-                'buy_strike': buy['strike'],
-                'sell_strike': sell['strike'],
-                'cost': debit,
-                'max_profit': max_profit,
-                'breakeven': breakeven,
-                'delta_net': buy['delta'] - sell['delta'],
-                'gamma_net': buy['gamma'] - sell['gamma'],
-                'pnl': pnl,
-                'pos_prob': pos_prob,
-                'avg_return': avg_return,
-                'legs': f"Buy {buy['strike']}C @ {buy['ask']}, Sell {sell['strike']}C @ {sell['bid']}"
-            })
-    return res
+    calls_sorted = calls.sort_values("strike")
+    if len(calls_sorted) < 2:
+        st.warning("Bull Call Spread需要至少两个不同执行价的Call期权")
+        return None
+    
+    buy = calls_sorted.iloc[0]
+    sell = calls_sorted.iloc[-1]
+    debit = buy.ask - sell.bid
+    max_profit = sell.strike - buy.strike - debit
+    
+    prices = np.linspace(buy.strike * 0.9, sell.strike * 1.1, 100)
+    pnl = np.piecewise(prices,
+                       [prices <= buy.strike,
+                        (prices > buy.strike) & (prices < sell.strike),
+                        prices >= sell.strike],
+                       [-debit, lambda x: x - buy.strike - debit, max_profit])
+    return prices, pnl
 
-# 更多策略（示例）
-def short_put(puts):
-    res = []
-    for _, row in puts.iterrows():
-        credit = row['bid'] - cost_per_trade
-        strike = row['strike']
-        pnl = np.piecewise(prices,
-                           [prices < strike, prices >= strike],
-                           [lambda x: credit - (strike - x), lambda x: credit])
-        res.append({
-            'type': 'Short Put',
-            'sell_strike': strike,
-            'cost': -credit,
-            'max_profit': credit,
-            'breakeven': strike - credit,
-            'delta_net': row['delta'],
-            'gamma_net': row['gamma'],
-            'pnl': pnl,
-            'pos_prob': np.mean(pnl > 0),
-            'avg_return': np.mean(pnl / abs(credit)),
-            'legs': f"Sell {strike}P @ {row['bid']}"
-        })
-    return res
+def sell_put(puts):
+    puts_sorted = puts.sort_values("strike")
+    sell = puts_sorted.iloc[0]
+    strike = sell.strike
+    premium = sell.bid
+    
+    prices = np.linspace(strike * 0.8, strike * 1.2, 100)
+    pnl = np.where(prices >= strike, premium, premium - (strike - prices))
+    return prices, pnl
 
-# 汇总策略
-data_strategies = bull_call_spread(calls) + short_put(puts)
-strategies_df = pd.DataFrame(data_strategies)
+def sell_call(calls):
+    calls_sorted = calls.sort_values("strike")
+    sell = calls_sorted.iloc[-1]
+    strike = sell.strike
+    premium = sell.bid
+    
+    prices = np.linspace(strike * 0.8, strike * 1.2, 100)
+    pnl = np.where(prices <= strike, premium, premium - (prices - strike))
+    return prices, pnl
 
-# 按平均收益筛选前5策略
-strategies_df = strategies_df.sort_values(by='avg_return', ascending=False).head(5)
+# 执行策略模拟
+result = None
+if strategy == "Bull Call Spread":
+    result = bull_call_spread(calls)
+elif strategy == "Sell Put":
+    result = sell_put(puts)
+elif strategy == "Sell Call":
+    result = sell_call(calls)
 
-# 显示策略
-st.title(f"Option Strategy Simulator for {symbol}")
-st.write(f"**Underlying Price:** ${today_price:.2f}")
-
-for i, row in strategies_df.iterrows():
-    st.subheader(f"{row['type']} Strategy")
-    st.markdown(f"- Legs: {row['legs']}")
-    st.markdown(f"- Cost: ${row['cost']:.2f}")
-    st.markdown(f"- Max Profit: ${row['max_profit']:.2f}")
-    st.markdown(f"- Breakeven: ${row['breakeven']:.2f}")
-    st.markdown(f"- Δ: {row['delta_net']:.2f}, Γ: {row['gamma_net']:.2f}")
-    st.markdown(f"- Profit Probability: {row['pos_prob']*100:.1f}%")
-    st.markdown(f"- Avg Return: {row['avg_return']*100:.1f}%")
+# 可视化结果
+if result:
+    prices, pnl = result
     fig, ax = plt.subplots()
-    ax.hist(row['pnl'], bins=50, color='skyblue')
-    ax.set_title("P&L Distribution")
-    ax.set_xlabel("Profit / Loss")
-    ax.set_ylabel("Frequency")
+    ax.plot(prices, pnl, label=strategy)
+    ax.axhline(0, color='gray', linestyle='--')
+    ax.set_xlabel("标的价格")
+    ax.set_ylabel("收益 ($)")
+    ax.set_title(f"策略盈亏图 - {strategy}")
+    ax.legend()
     st.pyplot(fig)
 
-# 组合管理（基础展示）
-if user_position:
-    st.subheader("User Holdings (Preview Only)")
-    for line in user_position.split("\n"):
-        st.markdown(f"- {line}")
+# 显示模拟结果表格
+if result:
+    df_result = pd.DataFrame({"标的价格": prices, "策略盈亏": pnl})
+    with st.expander("📊 策略模拟结果明细"):
+        st.dataframe(df_result.round(2))
+
+# 模拟提示
+st.info("后续可添加更多策略、蒙特卡洛模拟与风险参数评估（IV、Delta等），并支持组合持仓管理")
