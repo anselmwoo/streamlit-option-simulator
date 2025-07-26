@@ -54,17 +54,20 @@ if min_price >= max_price:
     st.sidebar.error("最低价格不能高于或等于最高价格")
     st.stop()
 
-# 新增：选择策略类型（当前只有Bull Call Spread，方便以后扩展）
+# 策略类型选择
 strategy_type = st.sidebar.selectbox("选择策略类型", options=[
-    "Bull Call Spread"
+    "Bull Call Spread",
+    "Sell Put",
+    "Sell Call",
 ])
 
-# 新增：用户输入现有持仓和持仓成本
+# 用户持仓输入
 st.sidebar.header("持仓信息输入")
-current_position = st.sidebar.number_input("现有持仓股数（正数表示多头，负数表示空头）", value=0, step=100)
+current_position = st.sidebar.number_input("现有持仓股数（正多/负空）", value=0, step=100)
 position_cost = st.sidebar.number_input("持仓平均成本 ($/股)", value=0.0, step=0.1)
 
 # 策略模拟函数
+
 def simulate_bull_call_spreads(calls, price_range):
     results = []
     for i in range(len(calls)):
@@ -101,14 +104,80 @@ def simulate_bull_call_spreads(calls, price_range):
             })
     return sorted(results, key=lambda x: -x["Avg Return"])
 
-# 运行模拟
+def simulate_sell_puts(puts, price_range):
+    results = []
+    for idx, put in puts.iterrows():
+        credit = put["bid"]
+        if np.isnan(credit) or credit <= 0 or credit > invest_limit:
+            continue
+
+        strike = put["strike"]
+        max_loss = strike - credit  # 理论最大亏损（假设标的跌至0）
+        breakeven = strike - credit
+
+        pnl = []
+        for price in price_range:
+            if price >= strike:
+                profit = credit
+            elif price <= 0:
+                profit = -max_loss
+            else:
+                profit = credit - (strike - price)
+            pnl.append(profit)
+
+        avg_return = np.mean([p / credit for p in pnl if credit != 0])
+        results.append({
+            "Strike": strike,
+            "Credit": credit,
+            "Max Loss": max_loss,
+            "Breakeven": breakeven,
+            "Avg Return": avg_return,
+            "PnL": pnl
+        })
+    return sorted(results, key=lambda x: -x["Avg Return"])
+
+def simulate_sell_calls(calls, price_range):
+    results = []
+    for idx, call in calls.iterrows():
+        credit = call["bid"]
+        if np.isnan(credit) or credit <= 0 or credit > invest_limit:
+            continue
+
+        strike = call["strike"]
+        max_loss = float('inf')  # 卖看涨理论亏损无上限
+        breakeven = strike + credit
+
+        pnl = []
+        for price in price_range:
+            if price <= strike:
+                profit = credit
+            else:
+                profit = credit - (price - strike)
+            pnl.append(profit)
+
+        avg_return = np.mean([p / credit for p in pnl if credit != 0])
+        results.append({
+            "Strike": strike,
+            "Credit": credit,
+            "Max Loss": max_loss,
+            "Breakeven": breakeven,
+            "Avg Return": avg_return,
+            "PnL": pnl
+        })
+    return sorted(results, key=lambda x: -x["Avg Return"])
+
+# 主程序模拟执行
 if st.button("▶️ 开始模拟"):
     prices = np.arange(min_price, max_price + step, step)
 
     if strategy_type == "Bull Call Spread":
         strategies = simulate_bull_call_spreads(calls, prices)
+    elif strategy_type == "Sell Put":
+        strategies = simulate_sell_puts(puts, prices)
+    elif strategy_type == "Sell Call":
+        strategies = simulate_sell_calls(calls, prices)
     else:
-        st.error("暂时只支持 Bull Call Spread 策略")
+        st.error("未知策略")
         st.stop()
 
     if not strategies:
@@ -116,23 +185,34 @@ if st.button("▶️ 开始模拟"):
         st.stop()
 
     best = strategies[0]
-    st.subheader("🔥 最佳策略")
+
+    st.subheader(f"🔥 最佳策略: {strategy_type}")
 
     st.markdown(f"**标的：** {symbol}")
     st.markdown(f"**到期日：** {selected_exp}")
-    st.markdown(f"**策略类型：** {strategy_type}")
-    st.markdown(f"**买入执行价：** ${best['Buy Strike']} Call")
-    st.markdown(f"**卖出执行价：** ${best['Sell Strike']} Call")
-    st.markdown(f"**成本：** ${best['Cost']:.2f}，最大收益：${best['Max Profit']:.2f}，盈亏平衡点：${best['Breakeven']:.2f}")
+
+    if strategy_type == "Bull Call Spread":
+        st.markdown(f"**买入执行价：** ${best['Buy Strike']} Call")
+        st.markdown(f"**卖出执行价：** ${best['Sell Strike']} Call")
+        st.markdown(f"**成本：** ${best['Cost']:.2f}，最大收益：${best['Max Profit']:.2f}，盈亏平衡点：${best['Breakeven']:.2f}")
+    else:
+        st.markdown(f"**执行价：** ${best['Strike']}")
+        st.markdown(f"**权利金：** ${best['Credit']:.2f}，盈亏平衡点：${best['Breakeven']:.2f}")
+        if best["Max Loss"] == float('inf'):
+            st.markdown("**最大亏损：理论无限（需注意风险）**")
+        else:
+            st.markdown(f"**最大亏损：** ${best['Max Loss']:.2f}")
+
     st.markdown(f"**平均收益率：** {best['Avg Return']*100:.2f}%")
 
-    # 持仓盈亏示例展示（持仓股数和成本）
+    # 持仓盈亏估算
     if current_position != 0:
-        current_price = prices[-1]  # 取价格区间最高价做示例
+        current_price = prices[-1]
         pos_pnl = (current_price - position_cost) * current_position
         st.markdown(f"**当前持仓：** {current_position} 股，成本 ${position_cost:.2f}，假设当前价格 ${current_price:.2f}")
         st.markdown(f"**持仓盈亏估计：** ${pos_pnl:.2f}")
 
+    # 盈亏图
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=prices, y=best["PnL"], mode='lines+markers', name='策略PnL'))
     fig.update_layout(title="策略盈亏图（模拟价格 vs 收益）",
@@ -141,7 +221,10 @@ if st.button("▶️ 开始模拟"):
                       template="plotly_white")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 展示收益率前5策略
+    # 前5策略展示
     st.subheader("📋 收益率前5策略")
     top5 = pd.DataFrame(strategies[:5])
-    st.dataframe(top5[["Buy Strike", "Sell Strike", "Cost", "Max Profit", "Breakeven", "Avg Return"]].round(2))
+    if strategy_type == "Bull Call Spread":
+        st.dataframe(top5[["Buy Strike", "Sell Strike", "Cost", "Max Profit", "Breakeven", "Avg Return"]].round(2))
+    else:
+        st.dataframe(top5[["Strike", "Credit", "Max Loss", "Breakeven", "Avg Return"]].round(2))
