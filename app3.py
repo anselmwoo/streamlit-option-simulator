@@ -2,344 +2,271 @@ import streamlit as st
 import yfinance as yf
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 
-st.set_page_config(layout="wide", page_title="Options Strategy Simulator")
+st.set_page_config(page_title="Options Strategy Simulator", layout="wide")
+st.title("🧠 Options Strategy Simulator")
 
-# ----------------- 左侧栏输入 -----------------
-st.sidebar.title("📊 Option Strategy Builder")
+# 初始化策略和持仓
+if "strategies" not in st.session_state:
+    st.session_state.strategies = []
+if "positions" not in st.session_state:
+    st.session_state.positions = []
 
-symbol = st.sidebar.text_input("Enter stock symbol", value="AAPL").upper()
+with st.sidebar:
+    st.header("Underlying & Option Chain Configuration")
 
-try:
-    ticker = yf.Ticker(symbol)
-    expiration_dates = ticker.options
-except Exception:
-    st.sidebar.error("❌ Unable to fetch option data for the symbol")
-    st.stop()
+    # 标的代码输入
+    symbol = st.text_input("Enter stock symbol (e.g. AMD)", value="AMD").upper()
 
-expiry = st.sidebar.selectbox("Select expiration date", expiration_dates)
+    expirations = []
+    ticker = None
+    if symbol:
+        try:
+            ticker = yf.Ticker(symbol)
+            expirations = ticker.options
+        except Exception as e:
+            st.error(f"Error fetching option expirations: {e}")
 
-option_chain = ticker.option_chain(expiry)
-calls = option_chain.calls
-puts = option_chain.puts
-
-# Filter strike price range for user convenience
-strikes = sorted(set(calls['strike']).intersection(set(puts['strike'])))
-min_strike = min(strikes)
-max_strike = max(strikes)
-
-strike_range = st.sidebar.slider("Strike price range", float(min_strike), float(max_strike), (float(min_strike), float(max_strike)))
-filtered_strikes = [s for s in strikes if strike_range[0] <= s <= strike_range[1]]
-
-strategy = st.sidebar.selectbox(
-    "Select strategy",
-    [
-        "Sell Put",
-        "Sell Call",
-        "Bull Call Spread",
-        "Bear Put Spread",
-        "Straddle",
-        "Iron Condor",
-        "Covered Call"
-    ]
-)
-
-st.sidebar.markdown("---")
-
-# ----------------- 选择执行价 -----------------
-def select_strike(label, strikes):
-    return st.sidebar.selectbox(label, strikes)
-
-# Initialize strike selections
-strike1 = None
-strike2 = None
-strike3 = None
-strike4 = None
-
-if strategy == "Sell Put":
-    strike1 = select_strike("Put Strike Price", filtered_strikes)
-elif strategy == "Sell Call":
-    strike1 = select_strike("Call Strike Price", filtered_strikes)
-elif strategy == "Bull Call Spread":
-    strike1 = select_strike("Long Call Strike", filtered_strikes)
-    strike2 = select_strike("Short Call Strike (> Long Call)", [s for s in filtered_strikes if s > strike1])
-elif strategy == "Bear Put Spread":
-    strike1 = select_strike("Long Put Strike", filtered_strikes)
-    strike2 = select_strike("Short Put Strike (< Long Put)", [s for s in filtered_strikes if s < strike1])
-elif strategy == "Straddle":
-    strike1 = select_strike("Strike Price", filtered_strikes)
-elif strategy == "Iron Condor":
-    strike1 = select_strike("Long Put Strike", filtered_strikes)
-    strike2 = select_strike("Short Put Strike (> Long Put)", [s for s in filtered_strikes if s > strike1])
-    strike3 = select_strike("Short Call Strike (> Short Put)", [s for s in filtered_strikes if s > strike2])
-    strike4 = select_strike("Long Call Strike (> Short Call)", [s for s in filtered_strikes if s > strike3])
-elif strategy == "Covered Call":
-    strike1 = select_strike("Stock Price (for reference)", filtered_strikes)
-    strike2 = select_strike("Call Strike to Sell", filtered_strikes)
-
-# ----------------- 获取期权价格 -----------------
-def get_option_price(df, strike, right='call', price_type='ask'):
-    if df.empty or strike is None:
-        return None
-    filt = df[(df['strike'] == strike)]
-    if filt.empty:
-        return None
-    return float(filt[price_type].iloc[0])
-
-# 现价 (用最近交易价做参考)
-underlying_price = ticker.history(period="1d")['Close'][-1]
-
-# ----------------- 策略计算 -----------------
-def calc_sell_put(strike):
-    ask_price = get_option_price(puts, strike, right='put', price_type='ask')
-    if ask_price is None:
-        return None
-    cost = ask_price * 100  # 收取期权费
-    max_loss = strike * 100 - cost
-    max_profit = cost
-    breakeven = strike - ask_price
-    return {
-        "max_profit": max_profit,
-        "max_loss": max_loss,
-        "cost": -cost,
-        "breakeven": breakeven
-    }
-
-def calc_sell_call(strike):
-    ask_price = get_option_price(calls, strike, right='call', price_type='ask')
-    if ask_price is None:
-        return None
-    cost = ask_price * 100
-    max_loss = 1e10  # 理论无限亏损
-    max_profit = cost
-    breakeven = strike + ask_price
-    return {
-        "max_profit": max_profit,
-        "max_loss": max_loss,
-        "cost": -cost,
-        "breakeven": breakeven
-    }
-
-def calc_bull_call_spread(long_strike, short_strike):
-    long_ask = get_option_price(calls, long_strike, 'call', 'ask')
-    short_bid = get_option_price(calls, short_strike, 'call', 'bid')
-    if long_ask is None or short_bid is None:
-        return None
-    cost = (long_ask - short_bid) * 100
-    max_profit = (short_strike - long_strike) * 100 - cost
-    max_loss = cost
-    breakeven = long_strike + cost / 100
-    return {
-        "max_profit": max_profit,
-        "max_loss": max_loss,
-        "cost": -cost,
-        "breakeven": breakeven
-    }
-
-def calc_bear_put_spread(long_strike, short_strike):
-    long_ask = get_option_price(puts, long_strike, 'put', 'ask')
-    short_bid = get_option_price(puts, short_strike, 'put', 'bid')
-    if long_ask is None or short_bid is None:
-        return None
-    cost = (long_ask - short_bid) * 100
-    max_profit = (long_strike - short_strike) * 100 - cost
-    max_loss = cost
-    breakeven = long_strike - cost / 100
-    return {
-        "max_profit": max_profit,
-        "max_loss": max_loss,
-        "cost": -cost,
-        "breakeven": breakeven
-    }
-
-def calc_straddle(strike):
-    call_ask = get_option_price(calls, strike, 'call', 'ask')
-    put_ask = get_option_price(puts, strike, 'put', 'ask')
-    if call_ask is None or put_ask is None:
-        return None
-    cost = (call_ask + put_ask) * 100
-    max_profit = 1e10  # 理论无限
-    breakeven1 = strike - cost / 100
-    breakeven2 = strike + cost / 100
-    return {
-        "max_profit": max_profit,
-        "max_loss": cost,
-        "cost": -cost,
-        "breakeven1": breakeven1,
-        "breakeven2": breakeven2
-    }
-
-def calc_iron_condor(long_put, short_put, short_call, long_call):
-    long_put_ask = get_option_price(puts, long_put, 'put', 'ask')
-    short_put_bid = get_option_price(puts, short_put, 'put', 'bid')
-    short_call_bid = get_option_price(calls, short_call, 'call', 'bid')
-    long_call_ask = get_option_price(calls, long_call, 'call', 'ask')
-    if None in [long_put_ask, short_put_bid, short_call_bid, long_call_ask]:
-        return None
-    cost = (long_put_ask - short_put_bid + short_call_bid - long_call_ask) * 100
-    max_profit = cost
-    max_loss = (short_call - short_put - (cost / 100)) * 100
-    breakeven1 = short_put + cost / 100
-    breakeven2 = short_call - cost / 100
-    return {
-        "max_profit": max_profit,
-        "max_loss": max_loss,
-        "cost": cost,
-        "breakeven1": breakeven1,
-        "breakeven2": breakeven2
-    }
-
-def calc_covered_call(stock_price, call_strike):
-    call_bid = get_option_price(calls, call_strike, 'call', 'bid')
-    if call_bid is None:
-        return None
-    cost = -stock_price * 100  # 持有股票的成本（负值）
-    max_profit = (call_strike - stock_price) * 100 + call_bid * 100
-    max_loss = stock_price * 100 - call_bid * 100
-    breakeven = stock_price - call_bid
-    return {
-        "max_profit": max_profit,
-        "max_loss": max_loss,
-        "cost": cost,
-        "breakeven": breakeven
-    }
-
-# ----------------- PnL 计算 -----------------
-def pnl_sell_put(strike, spot_prices, net_credit):
-    # 收取权利金，最大亏损strike*100 - net_credit
-    return np.where(spot_prices >= strike,
-                    net_credit,
-                    spot_prices * 100 - strike * 100 + net_credit)
-
-def pnl_sell_call(strike, spot_prices, net_credit):
-    # 收取权利金，理论无限亏损
-    return np.where(spot_prices <= strike,
-                    net_credit,
-                    strike * 100 - spot_prices * 100 + net_credit)
-
-def pnl_bull_call_spread(long_strike, short_strike, spot_prices, net_cost):
-    return np.where(
-        spot_prices <= long_strike,
-        -net_cost,
-        np.where(
-            spot_prices >= short_strike,
-            (short_strike - long_strike) * 100 - net_cost,
-            (spot_prices - long_strike) * 100 - net_cost
-        )
-    )
-
-def pnl_bear_put_spread(long_strike, short_strike, spot_prices, net_cost):
-    return np.where(
-        spot_prices >= long_strike,
-        -net_cost,
-        np.where(
-            spot_prices <= short_strike,
-            (long_strike - short_strike) * 100 - net_cost,
-            (long_strike - spot_prices) * 100 - net_cost
-        )
-    )
-
-def pnl_straddle(strike, spot_prices, net_cost):
-    return np.abs(spot_prices - strike) * 100 - net_cost
-
-def pnl_iron_condor(long_put, short_put, short_call, long_call, spot_prices, net_credit):
-    pnl = np.zeros_like(spot_prices)
-    # Loss beyond short put strike
-    idx = spot_prices < long_put
-    pnl[idx] = (spot_prices[idx] - long_put) * 100 + net_credit
-    # Between long_put and short_put
-    idx = (spot_prices >= long_put) & (spot_prices <= short_put)
-    pnl[idx] = net_credit
-    # Between short_put and short_call
-    idx = (spot_prices > short_put) & (spot_prices < short_call)
-    pnl[idx] = net_credit
-    # Between short_call and long_call
-    idx = (spot_prices >= short_call) & (spot_prices <= long_call)
-    pnl[idx] = net_credit
-    # Beyond long_call strike
-    idx = spot_prices > long_call
-    pnl[idx] = (long_call - spot_prices[idx]) * 100 + net_credit
-    return pnl
-
-def pnl_covered_call(stock_price, call_strike, spot_prices, call_bid):
-    # 持有股票 + 卖出看涨期权
-    return (spot_prices - stock_price) * 100 + call_bid * 100
-
-# ----------------- 主界面展示 -----------------
-st.title(f"🧠 Options Strategy Simulator — {symbol}")
-
-st.write(f"Underlying Price: ${underlying_price:.2f} | Expiration: {expiry}")
-
-if strategy == "Sell Put":
-    res = calc_sell_put(strike1)
-    if res:
-        spot_range = np.linspace(strike1*0.7, strike1*1.3, 200)
-        pnl = pnl_sell_put(strike1, spot_range, res["cost"])
-elif strategy == "Sell Call":
-    res = calc_sell_call(strike1)
-    if res:
-        spot_range = np.linspace(strike1*0.7, strike1*1.3, 200)
-        pnl = pnl_sell_call(strike1, spot_range, res["cost"])
-elif strategy == "Bull Call Spread":
-    res = calc_bull_call_spread(strike1, strike2)
-    if res:
-        spot_range = np.linspace(strike1*0.7, strike2*1.3, 200)
-        pnl = pnl_bull_call_spread(strike1, strike2, spot_range, -res["cost"])
-elif strategy == "Bear Put Spread":
-    res = calc_bear_put_spread(strike1, strike2)
-    if res:
-        spot_range = np.linspace(strike2*0.7, strike1*1.3, 200)
-        pnl = pnl_bear_put_spread(strike1, strike2, spot_range, -res["cost"])
-elif strategy == "Straddle":
-    res = calc_straddle(strike1)
-    if res:
-        spot_range = np.linspace(strike1*0.7, strike1*1.3, 200)
-        pnl = pnl_straddle(strike1, spot_range, -res["cost"])
-elif strategy == "Iron Condor":
-    res = calc_iron_condor(strike1, strike2, strike3, strike4)
-    if res:
-        min_strike = min(strike1, strike2, strike3, strike4)
-        max_strike = max(strike1, strike2, strike3, strike4)
-        spot_range = np.linspace(min_strike*0.7, max_strike*1.3, 200)
-        pnl = pnl_iron_condor(strike1, strike2, strike3, strike4, spot_range, res["cost"])
-elif strategy == "Covered Call":
-    res = calc_covered_call(strike1, strike2)
-    if res:
-        spot_range = np.linspace(strike1*0.7, strike2*1.5, 200)
-        call_bid = get_option_price(calls, strike2, 'call', 'bid')
-        pnl = pnl_covered_call(strike1, strike2, spot_range, call_bid)
-else:
-    st.warning("Unsupported strategy")
-
-if res is None:
-    st.error("Cannot find option prices for the selected strikes. Please choose different strikes.")
-    st.stop()
-
-# 显示策略参数
-st.subheader("Strategy Details")
-for k, v in res.items():
-    if isinstance(v, float):
-        st.write(f"**{k.replace('_',' ').capitalize()}:** {v:.2f}")
+    expiry = None
+    if expirations:
+        expiry = st.selectbox("Select expiration date", expirations)
     else:
-        st.write(f"**{k.replace('_',' ').capitalize()}:** {v}")
+        st.info("No expirations found or enter valid symbol")
 
-# 绘图
-fig, ax = plt.subplots(figsize=(10,5))
-ax.plot(spot_range, pnl, label="PnL")
-ax.axhline(0, linestyle="--", color="black")
-if strategy in ["Bull Call Spread", "Bear Put Spread"]:
-    ax.axvline(strike1, linestyle=":", color="green", label="Long Strike")
-    ax.axvline(strike2, linestyle=":", color="red", label="Short Strike")
-elif strategy == "Iron Condor":
-    ax.axvline(strike1, linestyle=":", color="green", label="Long Put")
-    ax.axvline(strike2, linestyle=":", color="lime", label="Short Put")
-    ax.axvline(strike3, linestyle=":", color="orange", label="Short Call")
-    ax.axvline(strike4, linestyle=":", color="red", label="Long Call")
-else:
-    ax.axvline(strike1, linestyle=":", color="blue", label="Strike")
+    st.markdown("---")
+    st.subheader("Filter Option Strike Price Range")
+    min_price = st.number_input("Min strike price", value=100.0)
+    max_price = st.number_input("Max strike price", value=200.0)
 
-ax.set_xlabel("Underlying Price at Expiration")
-ax.set_ylabel("Profit / Loss ($)")
-ax.set_title(f"{strategy} PnL for {symbol}")
-ax.legend()
-st.pyplot(fig)
+    st.markdown("---")
+    st.header("Strategy & Position Configuration")
+
+    strategy_type = st.selectbox("Select strategy", [
+        "Sell Put", "Sell Call", "Bull Call Spread", "Straddle", "Iron Condor", "Covered Call"
+    ])
+
+    underlying_price = st.number_input("Current underlying price ($)", value=166.47)
+
+    strike1 = st.number_input("Strike price 1 ($)", value=160.0)
+    strike2 = None
+    strike3 = None
+    strike4 = None
+
+    if strategy_type in ["Bull Call Spread", "Straddle", "Covered Call"]:
+        strike2 = st.number_input("Strike price 2 ($)", value=180.0)
+
+    if strategy_type == "Iron Condor":
+        strike2 = st.number_input("Strike price 2 (Short Put) ($)", value=155.0)
+        strike3 = st.number_input("Strike price 3 (Short Call) ($)", value=175.0)
+        strike4 = st.number_input("Strike price 4 (Long Call) ($)", value=185.0)
+
+    option_price1 = st.number_input("Option price 1 ($)", value=2.3)
+    option_price2 = st.number_input("Option price 2 ($)", value=0.8) if strike2 else 0.0
+    option_price3 = st.number_input("Option price 3 ($)", value=0.5) if strike3 else 0.0
+    option_price4 = st.number_input("Option price 4 ($)", value=0.3) if strike4 else 0.0
+
+    quantity = st.number_input("Number of contracts (100 shares each)", value=1, step=1)
+
+    if st.button("➕ Add to strategy portfolio"):
+        st.session_state.strategies.append({
+            "type": strategy_type,
+            "underlying": underlying_price,
+            "strike1": strike1,
+            "strike2": strike2,
+            "strike3": strike3,
+            "strike4": strike4,
+            "price1": option_price1,
+            "price2": option_price2,
+            "price3": option_price3,
+            "price4": option_price4,
+            "qty": quantity,
+            "expiry": expiry
+        })
+
+    st.divider()
+    st.subheader("Add Existing Stock Position")
+    cost_basis = st.number_input("Stock cost basis ($)", value=165.0)
+    shares = st.number_input("Number of shares held", value=100)
+    if st.button("📥 Add position"):
+        st.session_state.positions.append({"cost": cost_basis, "shares": shares})
+
+col1, col2 = st.columns([3, 2])
+
+# Option chain display on left
+with col1:
+    if expiry and ticker:
+        try:
+            opt_chain = ticker.option_chain(expiry)
+            calls = opt_chain.calls
+            puts = opt_chain.puts
+
+            calls_filtered = calls[(calls['strike'] >= min_price) & (calls['strike'] <= max_price)]
+            puts_filtered = puts[(puts['strike'] >= min_price) & (puts['strike'] <= max_price)]
+
+            st.subheader(f"Calls for {symbol} expiring on {expiry} (Strike {min_price} - {max_price})")
+            st.dataframe(calls_filtered[['contractSymbol', 'strike', 'bid', 'ask', 'lastPrice', 'volume']])
+
+            st.subheader(f"Puts for {symbol} expiring on {expiry} (Strike {min_price} - {max_price})")
+            st.dataframe(puts_filtered[['contractSymbol', 'strike', 'bid', 'ask', 'lastPrice', 'volume']])
+
+        except Exception as e:
+            st.error(f"Error fetching option chain data: {e}")
+    else:
+        st.info("Enter valid symbol and select expiration date to view option chain.")
+
+# Strategy profit & details on right
+with col2:
+    st.subheader("📊 Strategy Profit Chart & Details")
+
+    if st.session_state.strategies:
+        spot_range = np.linspace(underlying_price * 0.7, underlying_price * 1.3, 200)
+        total_pnl = np.zeros_like(spot_range)
+
+        # 只画最后添加的策略盈亏示例
+        strat = st.session_state.strategies[-1]
+
+        # 解析执行价和价格，方便绘图
+        strike1 = strat.get("strike1")
+        strike2 = strat.get("strike2")
+        strike3 = strat.get("strike3")
+        strike4 = strat.get("strike4")
+        price1 = strat.get("price1")
+        price2 = strat.get("price2")
+        price3 = strat.get("price3")
+        price4 = strat.get("price4")
+        qty = strat.get("qty")
+        strategy = strat.get("type")
+
+        mult = qty * 100
+        pnl = np.zeros_like(spot_range)
+
+        # 根据策略类型计算pnl
+        if strategy == "Sell Put":
+            pnl = np.where(
+                spot_range < strike1,
+                (spot_range - strike1) + price1,
+                price1
+            ) * mult
+
+        elif strategy == "Sell Call":
+            pnl = np.where(
+                spot_range > strike1,
+                (strike1 - spot_range) + price1,
+                price1
+            ) * mult
+
+        elif strategy == "Bull Call Spread":
+            pnl = np.where(
+                spot_range <= strike1,
+                -price1 * mult,
+                np.where(
+                    spot_range >= strike2,
+                    (strike2 - strike1 - price1 + price2) * mult,
+                    ((spot_range - strike1) - price1 + price2) * mult
+                )
+            )
+
+        elif strategy == "Straddle":
+            pnl = (-np.abs(spot_range - strike1) + price1 + price2) * mult
+
+        elif strategy == "Iron Condor":
+            # IC = Long Put (strike1), Short Put (strike2), Short Call (strike3), Long Call (strike4)
+            put_long = np.where(
+                spot_range < strike1,
+                (strike1 - spot_range) - price1,
+                -price1
+            ) * mult
+            put_short = np.where(
+                (spot_range >= strike1) & (spot_range < strike2),
+                price2,
+                np.where(spot_range < strike1, price2 - (strike2 - spot_range), price2)
+            ) * mult * -1
+            call_short = np.where(
+                (spot_range > strike3) & (spot_range <= strike4),
+                price3,
+                np.where(spot_range > strike4, price3 - (spot_range - strike4), price3)
+            ) * mult * -1
+            call_long = np.where(
+                spot_range > strike4,
+                (spot_range - strike4) - price4,
+                -price4
+            ) * mult
+
+            pnl = put_long + put_short + call_short + call_long
+
+        elif strategy == "Covered Call":
+            # Covered call = stock - short call
+            stock_pnl = (spot_range - underlying_price) * qty * 100
+            call_short = np.where(
+                spot_range > strike2,
+                price2 - (spot_range - strike2),
+                price2
+            ) * qty * 100 * -1
+            pnl = stock_pnl + call_short
+
+        total_pnl += pnl
+
+        # 画图并标注strike价格
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(spot_range, pnl, label=f"{strategy} PnL")
+
+        ax.axhline(0, linestyle="--", color="black")
+
+        def mark_strike(ax, price, color, label):
+            if price is None:
+                return
+            ax.axvline(price, linestyle=":", color=color)
+            ylim = ax.get_ylim()
+            y_pos = ylim[1] * 0.95
+            ax.text(price, y_pos, f"{price:.2f}", color=color, rotation=90,
+                    verticalalignment='top', horizontalalignment='right',
+                    fontsize=9, fontweight='bold')
+
+        if strategy in ["Bull Call Spread", "Bear Put Spread"]:
+            mark_strike(ax, strike1, "green", "Long Strike")
+            mark_strike(ax, strike2, "red", "Short Strike")
+        elif strategy == "Iron Condor":
+            mark_strike(ax, strike1, "green", "Long Put")
+            mark_strike(ax, strike2, "lime", "Short Put")
+            mark_strike(ax, strike3, "orange", "Short Call")
+            mark_strike(ax, strike4, "red", "Long Call")
+        elif strategy == "Covered Call":
+            mark_strike(ax, strike1, "blue", "Stock Price")
+            mark_strike(ax, strike2, "red", "Short Call")
+        else:
+            mark_strike(ax, strike1, "blue", "Strike")
+
+        ax.set_xlabel("Underlying Price at Expiration")
+        ax.set_ylabel("Profit / Loss ($)")
+        ax.set_title(f"{strategy} PnL for {symbol}")
+        ax.legend()
+        st.pyplot(fig)
+        plt.clf()
+
+        # 显示策略参数详细信息
+        st.subheader("Strategy Details")
+        res = {
+            "strategy": strategy,
+            "strike1": strike1,
+            "strike2": strike2,
+            "strike3": strike3,
+            "strike4": strike4,
+            "price1": price1,
+            "price2": price2,
+            "price3": price3,
+            "price4": price4,
+            "quantity": qty,
+            "expiry": expiry,
+        }
+        for k, v in res.items():
+            if v is not None:
+                if isinstance(v, float):
+                    st.write(f"**{k.replace('_',' ').capitalize()}:** {v:.2f}")
+                else:
+                    st.write(f"**{k.replace('_',' ').capitalize()}:** {v}")
+
+    else:
+        st.info("No strategies added yet.")
+
+st.caption("⚠️ This tool is for educational and simulation purposes only, not investment advice.")
