@@ -31,7 +31,7 @@ with st.sidebar:
     quantity = st.number_input("张数 (每张=100股)", value=1, step=1)
 
     submit = st.button("➕ 添加到策略组合")
-    
+
     if submit:
         st.session_state.strategies.append({
             "type": strategy_type,
@@ -115,14 +115,33 @@ with col2:
     df = pd.DataFrame(st.session_state.strategies)
     if not df.empty:
         df_display = df.copy()
-        df_display["成本"] = (df_display["price1"] - df_display["price2"]).fillna(df_display["price1"]) * 100
+
+        # 转换价格与执行价为数值，防止非数字出错
+        df_display["price1"] = pd.to_numeric(df_display["price1"], errors="coerce")
+        df_display["price2"] = pd.to_numeric(df_display["price2"], errors="coerce").fillna(0.0)
+
+        df_display["strike1"] = pd.to_numeric(df_display["strike1"], errors="coerce")
+        df_display["strike2"] = pd.to_numeric(df_display["strike2"], errors="coerce").fillna(0.0)
+
+        # 计算成本（price1 - price2）* 100
+        df_display["成本"] = ((df_display["price1"] - df_display["price2"]).fillna(df_display["price1"])) * 100
+
+        # 计算最大收益
         df_display["最大收益"] = np.where(
             df_display["type"] == "Bull Call Spread",
             (df_display["strike2"] - df_display["strike1"]) * 100 - df_display["成本"],
             df_display["price1"] * 100
         )
-        df_display["回报率"] = (df_display["最大收益"] / df_display["成本"]).round(2)
+
+        # 防止成本为0导致除零错误
+        df_display["成本"] = df_display["成本"].replace(0, np.nan)
+
+        # 计算回报率，空值用0代替
+        df_display["回报率"] = (df_display["最大收益"] / df_display["成本"]).round(2).fillna(0.0)
+
+        # 计算策略评分，简单加权示范
         df_display["策略评分"] = (df_display["回报率"] * 0.6 + df_display["最大收益"] / 100 * 0.4).round(1)
+
         st.dataframe(df_display[["type", "strike1", "strike2", "成本", "最大收益", "回报率", "策略评分"]])
     else:
         st.info("尚未添加任何策略。")
