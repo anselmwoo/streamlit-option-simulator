@@ -55,7 +55,7 @@ with st.sidebar:
 col1, col2 = st.columns([3, 2])
 
 with col1:
-    st.subheader("📊 策略收益图")
+    st.subheader("📊 StrategyProfitChart")
     spot_range = np.linspace(underlying_price * 0.7, underlying_price * 1.3, 200)
     total_pnl = np.zeros_like(spot_range)
 
@@ -111,7 +111,7 @@ with col1:
     plt.clf()
 
 with col2:
-    st.subheader("📋 策略明细与打分")
+    st.subheader("📋 StrategyDetailScore")
     df = pd.DataFrame(st.session_state.strategies)
     if not df.empty:
         df_display = df.copy()
@@ -124,25 +124,25 @@ with col2:
         df_display["strike2"] = pd.to_numeric(df_display["strike2"], errors="coerce").fillna(0.0)
 
         # 计算成本（price1 - price2）* 100
-        df_display["成本"] = ((df_display["price1"] - df_display["price2"]).fillna(df_display["price1"])) * 100
+        df_display["Cost"] = ((df_display["price1"] - df_display["price2"]).fillna(df_display["price1"])) * 100
 
         # 计算最大收益
-        df_display["最大收益"] = np.where(
+        df_display["MaxProfit"] = np.where(
             df_display["type"] == "Bull Call Spread",
             (df_display["strike2"] - df_display["strike1"]) * 100 - df_display["成本"],
             df_display["price1"] * 100
         )
 
         # 防止成本为0导致除零错误
-        df_display["成本"] = df_display["成本"].replace(0, np.nan)
+        df_display["Cost"] = df_display["Cost"].replace(0, np.nan)
 
         # 计算回报率，空值用0代替
-        df_display["回报率"] = (df_display["最大收益"] / df_display["成本"]).round(2).fillna(0.0)
+        df_display["ReturnRatio"] = (df_display["MaxProfit"] / df_display["Cost"]).round(2).fillna(0.0)
 
         # 计算策略评分，简单加权示范
-        df_display["策略评分"] = (df_display["回报率"] * 0.6 + df_display["最大收益"] / 100 * 0.4).round(1)
+        df_display["StrategyScore"] = (df_display["ReturnRatio"] * 0.6 + df_display["MaxProfit"] / 100 * 0.4).round(1)
 
-        st.dataframe(df_display[["type", "strike1", "strike2", "成本", "最大收益", "回报率", "策略评分"]])
+        st.dataframe(df_display[["type", "strike1", "strike2", "Cost", "MaxProfit", "ReturnRatio", "StrategyScore"]])
     else:
         st.info("尚未添加任何策略。")
 
