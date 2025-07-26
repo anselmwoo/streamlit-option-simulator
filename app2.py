@@ -3,125 +3,123 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from datetime import date
 
 st.set_page_config(layout="wide")
 
-# Fix for Chinese font rendering
-plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'sans-serif']
-plt.rcParams['axes.unicode_minus'] = False
-
-# Step 1: User enters stock symbol
-st.sidebar.header("Select Ticker and Parameters")
-ticker = st.sidebar.text_input("Enter Stock Ticker", value="AMD").upper()
-
-try:
-    stock = yf.Ticker(ticker)
+# 获取期权链数据
+def get_option_chain(symbol):
+    stock = yf.Ticker(symbol)
     expirations = stock.options
-except:
-    st.error("Failed to fetch options data for this ticker.")
-    st.stop()
+    return stock, expirations
 
-# Step 2: User selects expiration date
-expiry = st.sidebar.selectbox("Select Expiration Date", expirations)
+# 策略生成逻辑（简化示例）
+def generate_strategies(options_chain, kind="call"):
+    df = options_chain.copy()
+    df = df[['strike', 'lastPrice', 'impliedVolatility']].dropna()
+    df.columns = ['执行价', '期权价格', 'IV']
+    strategies = []
 
-# Step 3: Get option chain
-opt_chain = stock.option_chain(expiry)
-calls = opt_chain.calls.copy()
-puts = opt_chain.puts.copy()
+    # 单腿策略：买入看涨期权
+    for _, row in df.iterrows():
+        strike = row['执行价']
+        price = row['期权价格']
+        iv = row['IV']
+        strategy = {
+            "策略类型": "买入看涨期权" if kind == "call" else "买入看跌期权",
+            "买入执行价": strike,
+            "卖出执行价": None,
+            "成本": price,
+            "最大收益": None,
+            "最大亏损": price,
+            "盈亏平衡点": strike + price if kind == "call" else strike - price
+        }
+        strategies.append(strategy)
 
-# Step 4: User selects strike price range
-min_strike = int(calls["strike"].min())
-max_strike = int(calls["strike"].max())
-price_range = st.sidebar.slider("Select Strike Price Range", min_strike, max_strike, (min_strike + 5, max_strike - 5))
+    # 示例：牛市价差策略（买低卖高）
+    for i in range(len(df) - 1):
+        long_strike = df.iloc[i]['执行价']
+        short_strike = df.iloc[i + 1]['执行价']
+        long_price = df.iloc[i]['期权价格']
+        short_price = df.iloc[i + 1]['期权价格']
+        cost = long_price - short_price
+        max_profit = short_strike - long_strike - cost
+        strategy = {
+            "策略类型": "牛市价差",
+            "买入执行价": long_strike,
+            "卖出执行价": short_strike,
+            "成本": cost,
+            "最大收益": max_profit,
+            "最大亏损": cost,
+            "盈亏平衡点": long_strike + cost
+        }
+        strategies.append(strategy)
 
-# Filter options within range
-calls = calls[(calls["strike"] >= price_range[0]) & (calls["strike"] <= price_range[1])]
-puts = puts[(puts["strike"] >= price_range[0]) & (puts["strike"] <= price_range[1])]
+    return pd.DataFrame(strategies)
 
-# Step 5: Display option chains
-st.subheader(f"{ticker} - Call Options ({expiry})")
-st.dataframe(calls[["strike", "bid", "ask", "lastPrice", "impliedVolatility"]].rename(columns={
-    "strike": "Strike", "bid": "Bid", "ask": "Ask", "lastPrice": "Last", "impliedVolatility": "IV"
-}))
+# 收益绘图函数
+def plot_payoff(strategy_row):
+    st.subheader(f"策略收益图 - {strategy_row['策略类型']}")
+    spot_prices = np.linspace(0.5 * strategy_row['买入执行价'], 1.5 * (strategy_row['卖出执行价'] or strategy_row['买入执行价']), 300)
+    payoff = []
 
-st.subheader(f"{ticker} - Put Options ({expiry})")
-st.dataframe(puts[["strike", "bid", "ask", "lastPrice", "impliedVolatility"]].rename(columns={
-    "strike": "Strike", "bid": "Bid", "ask": "Ask", "lastPrice": "Last", "impliedVolatility": "IV"
-}))
+    cost = strategy_row["成本"]
+    buy_strike = strategy_row["买入执行价"]
+    sell_strike = strategy_row["卖出执行价"]
 
-# Step 6: Strategy simulation - Bull Call Spread example
-st.subheader("Strategy Simulation (Example: Bull Call Spread)")
-
-underlying_price = stock.history(period="1d")["Close"].iloc[-1]
-
-results = []
-
-for i in range(len(calls)):
-    for j in range(i + 1, len(calls)):
-        buy = calls.iloc[i]
-        sell = calls.iloc[j]
-
-        strike_buy = buy["strike"]
-        strike_sell = sell["strike"]
-
-        cost = round((buy["ask"] - sell["bid"]) * 100, 2)
-        max_profit = round((strike_sell - strike_buy) * 100 - cost, 2)
-        breakeven = strike_buy + (cost / 100)
-
-        # Estimate probability of profit
-        prob_profit = max(0, 1 - (breakeven - underlying_price) / (underlying_price * 0.2))
-        prob_profit = min(prob_profit, 1)
-
-        roi = round(max_profit / cost, 2) if cost > 0 else 0
-
-        results.append({
-            "Strategy": f"Bull Call {strike_buy}/{strike_sell}",
-            "Buy Strike": strike_buy,
-            "Sell Strike": strike_sell,
-            "Cost": cost,
-            "Max Profit": max_profit,
-            "Breakeven": round(breakeven, 2),
-            "Return": roi,
-            "Profit Probability (%)": round(prob_profit * 100, 1)
-        })
-
-df_results = pd.DataFrame(results)
-
-# Step 7: Show strategy table
-selected_row = st.data_editor(
-    df_results,
-    column_config={
-        "Strategy": st.column_config.TextColumn("Strategy Name"),
-        "Cost": st.column_config.NumberColumn("Cost ($)"),
-        "Max Profit": st.column_config.NumberColumn("Max Profit ($)"),
-        "Return": st.column_config.NumberColumn("Return / Cost", format="%.2f"),
-        "Profit Probability (%)": st.column_config.NumberColumn("Win Probability (%)")
-    },
-    use_container_width=True,
-    num_rows="dynamic",
-    key="strategy_table"
-)
-
-# Step 8: Plot payoff chart (if selected)
-if selected_row and isinstance(selected_row, list) and len(selected_row) > 0:
-    selected = selected_row[0]  # Take the first selected row
-
-    x = np.linspace(underlying_price * 0.8, underlying_price * 1.2, 100)
-    strike1 = selected["Buy Strike"]
-    strike2 = selected["Sell Strike"]
-    cost = selected["Cost"]
-
-    y = np.piecewise(x,
-                     [x <= strike1, (x > strike1) & (x < strike2), x >= strike2],
-                     [-cost, lambda x: (x - strike1) * 100 - cost, (strike2 - strike1) * 100 - cost])
+    for S in spot_prices:
+        if strategy_row["策略类型"] == "买入看涨期权":
+            payoff.append(max(S - buy_strike, 0) - cost)
+        elif strategy_row["策略类型"] == "买入看跌期权":
+            payoff.append(max(buy_strike - S, 0) - cost)
+        elif strategy_row["策略类型"] == "牛市价差":
+            leg1 = max(S - buy_strike, 0)
+            leg2 = max(S - sell_strike, 0)
+            payoff.append(leg1 - leg2 - cost)
+        else:
+            payoff.append(0)
 
     fig, ax = plt.subplots()
-    ax.plot(x, y, label=selected["Strategy"])
+    ax.plot(spot_prices, payoff, label='策略收益', color='blue')
     ax.axhline(0, color='gray', linestyle='--')
-    ax.axvline(strike1, color='blue', linestyle='--', label='Buy Strike')
-    ax.axvline(strike2, color='orange', linestyle='--', label='Sell Strike')
-    ax.set_xlabel("Underlying Price")
-    ax.set_ylabel("Profit ($)")
-    ax.set_title(f"Payoff Chart - {selected['Strategy']}")
-    ax.legend()
+    ax.set_xlabel("标的价格")
+    ax.set_ylabel("收益")
+    ax.set_title("期权策略收益曲线")
+    ax.grid(True)
     st.pyplot(fig)
+
+# Streamlit 界面
+st.title("期权策略模拟器")
+
+with st.sidebar:
+    symbol = st.text_input("输入标的代码 (如 AMD)", value="AMD").upper()
+
+# 获取期权数据
+if symbol:
+    try:
+        stock, expirations = get_option_chain(symbol)
+        st.sidebar.success(f"成功获取 {symbol} 期权数据")
+        expiry = st.selectbox("选择到期日", expirations)
+
+        if expiry:
+            chain = stock.option_chain(expiry)
+            kind = st.radio("选择期权类型", ["call", "put"])
+            options_chain = chain.calls if kind == "call" else chain.puts
+            strategy_df = generate_strategies(options_chain, kind=kind)
+
+            st.subheader("策略选择")
+            selected_row = st.data_editor(
+                strategy_df,
+                use_container_width=True,
+                hide_index=True,
+                column_order=("策略类型", "买入执行价", "卖出执行价", "成本", "最大收益", "最大亏损", "盈亏平衡点"),
+                num_rows="dynamic",
+                key="strategy_table"
+            )
+
+            if isinstance(selected_row, list) and len(selected_row) > 0:
+                selected_index = selected_row[0]
+                selected_strategy = strategy_df.iloc[selected_index]
+                plot_payoff(selected_strategy)
+    except Exception as e:
+        st.error(f"加载失败：{e}")
