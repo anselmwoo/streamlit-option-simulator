@@ -99,14 +99,14 @@ with col1:
     for pos in st.session_state.positions:
         stock_pnl = (spot_range - pos["cost"]) * pos["shares"]
         total_pnl += stock_pnl
-        plt.plot(spot_range, stock_pnl, linestyle="--", label="持仓盈亏")
+        plt.plot(spot_range, stock_pnl, linestyle="--", label="PositionProfit")
 
-    plt.plot(spot_range, total_pnl, label="组合总盈亏", color="black", linewidth=2)
+    plt.plot(spot_range, total_pnl, label="PortfolioOverallProfit", color="black", linewidth=2)
     plt.axhline(0, color="gray", linestyle="--")
     plt.axvline(underlying_price, color="red", linestyle=":", label="当前价格")
     plt.legend()
-    plt.xlabel("到期时标的价格")
-    plt.ylabel("策略盈亏 ($)")
+    plt.xlabel("SymbolPrice")
+    plt.ylabel("StrategyGainLoss ($)")
     st.pyplot(plt.gcf())
     plt.clf()
 
