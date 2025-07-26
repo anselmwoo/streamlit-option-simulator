@@ -3,6 +3,21 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+# 常用中文字体（Windows、macOS、Linux 环境字体可能不同）
+# Windows 示例（微软雅黑）
+zh_font = {'family': 'Microsoft YaHei'}
+
+# macOS 示例（华文黑体）
+# zh_font = {'family': 'STHeiti'}
+
+# Linux 示例（需自行安装字体，比如文泉驿微米黑）
+# zh_font = {'family': 'WenQuanYi Micro Hei'}
+
+matplotlib.rcParams['font.family'] = zh_font['family']
+
+# 防止负号显示异常
+matplotlib.rcParams['axes.unicode_minus'] = False
+
 st.set_page_config(page_title="期权策略模拟器", layout="wide")
 
 st.title("🧠 期权策略模拟器 - AMD 示例")
