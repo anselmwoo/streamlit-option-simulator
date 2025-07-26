@@ -1,103 +1,105 @@
+# app_yahoo.py
+
 import streamlit as st
 import yfinance as yf
-import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import norm
-import datetime
+from datetime import datetime, timedelta
 
-st.set_page_config(layout="wide")
-st.title("期权策略模拟器（支持多策略组合分析）")
+st.set_page_config(layout="wide", page_title="Option Strategy Simulator")
 
-# ------------------------- 获取用户输入 -------------------------
-st.sidebar.header("选择参数")
-ticker = st.sidebar.text_input("输入股票代码 (如 AMD):", value="AMD")
+# ----------------- 左侧栏输入 -----------------
+st.sidebar.title("📊 Option Strategy Builder")
+
+symbol = st.sidebar.text_input("输入股票代码", value="AAPL").upper()
 
 try:
-    stock = yf.Ticker(ticker)
-    current_price = stock.history(period="1d")["Close"].iloc[-1]
-    options_dates = stock.options
+    ticker = yf.Ticker(symbol)
+    expiration_dates = ticker.options
 except:
-    st.error("获取标的信息失败，请检查代码是否正确。")
+    st.sidebar.error("❌ 无法获取该股票的期权数据，请确认代码是否正确")
     st.stop()
 
-exp_date = st.sidebar.selectbox("选择到期日:", options_dates)
-min_strike = st.sidebar.number_input("最小执行价", value=int(current_price * 0.5))
-max_strike = st.sidebar.number_input("最大执行价", value=int(current_price * 1.5))
+expiry = st.sidebar.selectbox("选择到期日", expiration_dates)
 
-# ------------------------- 获取期权链 -------------------------
-opt_chain = stock.option_chain(exp_date)
-call_df = opt_chain.calls.copy()
-put_df = opt_chain.puts.copy()
+option_chain = ticker.option_chain(expiry)
+calls = option_chain.calls
+puts = option_chain.puts
 
-# 过滤价格范围
-call_df = call_df[(call_df["strike"] >= min_strike) & (call_df["strike"] <= max_strike)]
-put_df = put_df[(put_df["strike"] >= min_strike) & (put_df["strike"] <= max_strike)]
+strategy = st.sidebar.selectbox("选择策略类型", ["Bull Call Spread", "Bear Put Spread"])
 
-st.subheader(f"Call / Put 期权链数据 - 到期日: {exp_date}")
-st.dataframe(pd.concat([call_df[['strike', 'bid', 'ask', 'impliedVolatility']].rename(columns={'bid': 'Call Bid', 'ask': 'Call Ask', 'impliedVolatility': 'Call IV'}),
-                        put_df[['strike', 'bid', 'ask', 'impliedVolatility']].rename(columns={'bid': 'Put Bid', 'ask': 'Put Ask', 'impliedVolatility': 'Put IV'})],
-                       axis=1))
+# 选择执行价范围
+strikes = calls['strike'].values
+min_strike = float(np.min(strikes))
+max_strike = float(np.max(strikes))
 
-# ------------------------- 策略模拟 -------------------------
-st.subheader("策略收益模拟与评分")
-def simulate_strategy(s, k1, k2, option_type, cost):
-    # s: spot price
-    # k1: 买入价，k2: 卖出价
-    prices = np.linspace(s * 0.5, s * 1.5, 100)
-    if option_type == "Bull Call Spread":
-        payoff = np.maximum(prices - k1, 0) - np.maximum(prices - k2, 0) - cost
-    elif option_type == "Bear Put Spread":
-        payoff = np.maximum(k2 - prices, 0) - np.maximum(k1 - prices, 0) - cost
-    elif option_type == "Covered Call":
-        payoff = np.minimum(k1 - s, 0) + np.minimum(np.maximum(prices - k1, 0), k1 - s)
+strike_range = st.sidebar.slider("选择执行价范围", float(min_strike), float(max_strike), (float(min_strike), float(max_strike)))
+
+# ----------------- 策略构建逻辑 -----------------
+def create_bull_call_spread(calls_df, low_strike, high_strike):
+    long_call = calls_df[calls_df['strike'] == low_strike]
+    short_call = calls_df[calls_df['strike'] == high_strike]
+    if long_call.empty or short_call.empty:
+        return None
+    cost = long_call['ask'].values[0] - short_call['bid'].values[0]
+    max_profit = high_strike - low_strike - cost
+    max_loss = cost
+    return {
+        "type": "Bull Call Spread",
+        "long_strike": low_strike,
+        "short_strike": high_strike,
+        "net_cost": cost,
+        "max_profit": max_profit,
+        "max_loss": max_loss
+    }
+
+# ----------------- 收益图 -----------------
+def plot_pnl(strategy, spot_price_range):
+    pnl = []
+    for price in spot_price_range:
+        if strategy["type"] == "Bull Call Spread":
+            long = max(price - strategy["long_strike"], 0)
+            short = max(price - strategy["short_strike"], 0)
+            total = long - short - strategy["net_cost"]
+            pnl.append(total)
+    return pnl
+
+# ----------------- 策略生成与展示 -----------------
+st.title("🧠 Option Strategy Simulator (Yahoo 数据源)")
+st.markdown(f"**标的：** `{symbol}`  **到期日：** `{expiry}`")
+
+strikes_in_range = [s for s in strikes if strike_range[0] <= s <= strike_range[1]]
+strikes_in_range = sorted(strikes_in_range)
+
+selected_low = st.selectbox("选择买入执行价", strikes_in_range)
+selected_high = st.selectbox("选择卖出执行价", [s for s in strikes_in_range if s > selected_low])
+
+if strategy == "Bull Call Spread":
+    result = create_bull_call_spread(calls, selected_low, selected_high)
+
+    if result:
+        spot_prices = np.linspace(selected_low - 10, selected_high + 10, 100)
+        pnl = plot_pnl(result, spot_prices)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("💰 最大收益", f"${result['max_profit']:.2f}")
+            st.metric("💸 最大亏损", f"${result['max_loss']:.2f}")
+            st.metric("⚖️ 收益比", f"{result['max_profit'] / result['max_loss']:.2f} : 1")
+        with col2:
+            st.metric("🧾 净成本", f"${result['net_cost']:.2f}")
+            st.metric("📍 盈亏平衡点", f"${result['long_strike'] + result['net_cost']:.2f}")
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(spot_prices, pnl, label="策略 PnL", color="blue")
+        ax.axhline(0, linestyle='--', color='gray')
+        ax.axvline(result['long_strike'], linestyle=':', color='green', label='买入 Call')
+        ax.axvline(result['short_strike'], linestyle=':', color='red', label='卖出 Call')
+        ax.set_title("📈 策略收益曲线")
+        ax.set_xlabel("标的价格")
+        ax.set_ylabel("盈亏 ($)")
+        ax.legend()
+        st.pyplot(fig)
     else:
-        payoff = np.zeros_like(prices)
-    return prices, payoff
+        st.warning("❗ 当前执行价组合无有效价格，请重新选择")
 
-# 遍历生成 Bull Call Spread 组合
-strategies = []
-for i in range(len(call_df)):
-    for j in range(i + 1, len(call_df)):
-        k1, k2 = call_df.iloc[i]['strike'], call_df.iloc[j]['strike']
-        buy_cost = (call_df.iloc[i]['ask'] + call_df.iloc[i]['bid']) / 2
-        sell_credit = (call_df.iloc[j]['ask'] + call_df.iloc[j]['bid']) / 2
-        net_cost = buy_cost - sell_credit
-        prices, payoff = simulate_strategy(current_price, k1, k2, "Bull Call Spread", net_cost)
-        max_profit = np.max(payoff)
-        prob_profit = norm.cdf((k2 - current_price) / (current_price * 0.2))  # 简单估算
-        score = max_profit / net_cost if net_cost > 0 else 0
-        strategies.append({
-            "策略": f"Buy {k1}C / Sell {k2}C",
-            "类型": "Bull Call Spread",
-            "成本": round(net_cost, 2),
-            "最大收益": round(max_profit, 2),
-            "盈利概率": f"{prob_profit * 100:.1f}%",
-            "得分": round(score, 2),
-            "图": (prices, payoff)
-        })
-
-strategy_df = pd.DataFrame(strategies)
-st.dataframe(strategy_df.sort_values("得分", ascending=False).reset_index(drop=True))
-
-selected_idx = st.selectbox("选择策略查看收益图:", strategy_df.index, format_func=lambda i: strategy_df.loc[i, "策略"])
-
-# ------------------------- 绘制图表 -------------------------
-fig, ax = plt.subplots(figsize=(10, 4))
-plot_prices, plot_payoff = strategy_df.loc[selected_idx, "图"]
-ax.plot(plot_prices, plot_payoff, label=strategy_df.loc[selected_idx, "策略"])
-ax.axvline(current_price, color='r', linestyle='--', label='现价')
-ax.set_xlabel("股价")
-ax.set_ylabel("收益")
-ax.set_title("策略收益曲线")
-ax.legend()
-st.pyplot(fig)
-
-# ------------------------- 未来计划 -------------------------
-st.markdown("""
-**📌 后续功能规划：**
-- 支持更多策略类型（Iron Condor、Straddle 等）
-- 更精细的希腊值计算与Delta-Gamma可视化
-- 支持导入持仓、进行组合风险敞口分析
-- 自动推荐最优策略
-""")
