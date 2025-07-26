@@ -4,35 +4,56 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objs as go
 
-st.set_page_config(layout="wide")
+st.set_page_config(page_title="期权策略模拟器", layout="wide")
 
-st.title("📈 AMD 期权策略模拟器（收益率优化）")
+st.title("📈 期权策略模拟器（收益率优化）")
 
-# ---------- 用户输入参数 ----------
-ticker_symbol = "AMD"
-ticker = yf.Ticker(ticker_symbol)
+# 用户输入标的代码
+symbol = st.text_input("请输入标的股票代码（如 AMD、AAPL、TSLA）:", value="AMD").upper()
 
-dates = ticker.options
-selected_exp = st.selectbox("选择期权到期日：", dates)
+# 拉取期权链数据函数
+def get_option_chain(ticker):
+    stock = yf.Ticker(ticker)
+    try:
+        exps = stock.options
+        if not exps:
+            st.warning("未找到期权到期日")
+            return None, None, None
+        opt_date = st.selectbox("选择期权到期日:", exps)
+        opt_chain = stock.option_chain(opt_date)
+        return opt_chain.calls, opt_chain.puts, opt_date
+    except Exception as e:
+        st.error(f"获取期权链失败: {e}")
+        return None, None, None
 
-min_price = st.number_input("模拟价格区间（最低）", value=90)
-max_price = st.number_input("模拟价格区间（最高）", value=140)
-step = st.number_input("价格间隔", value=2)
-invest_limit = st.number_input("最大投入金额 ($)：", value=500)
+calls, puts, selected_exp = get_option_chain(symbol)
 
-if min_price >= max_price:
-    st.error("最低价格不能高于或等于最高价格")
+if calls is None or puts is None:
     st.stop()
 
-# ---------- 拉取期权链数据 ----------
-@st.cache_data
-def load_option_chain(symbol, exp_date):
-    opt = yf.Ticker(symbol).option_chain(exp_date)
-    return opt.calls, opt.puts
+# 显示 Calls 和 Puts 期权链
+st.subheader(f"📋 {symbol} Calls 期权链（到期日：{selected_exp}）")
+st.dataframe(calls[['strike', 'bid', 'ask', 'impliedVolatility']].rename(columns={
+    'strike': '执行价', 'bid': '买价', 'ask': '卖价', 'impliedVolatility': '隐含波动率'
+}))
 
-calls, puts = load_option_chain(ticker_symbol, selected_exp)
+st.subheader(f"📋 {symbol} Puts 期权链（到期日：{selected_exp}）")
+st.dataframe(puts[['strike', 'bid', 'ask', 'impliedVolatility']].rename(columns={
+    'strike': '执行价', 'bid': '买价', 'ask': '卖价', 'impliedVolatility': '隐含波动率'
+}))
 
-# ---------- 构建策略：牛市价差（Buy Call + Sell Call） ----------
+# 模拟参数输入
+st.sidebar.header("模拟参数设置")
+min_price = st.sidebar.number_input("模拟价格区间（最低）", value=90.0, step=0.5)
+max_price = st.sidebar.number_input("模拟价格区间（最高）", value=140.0, step=0.5)
+step = st.sidebar.number_input("价格间隔", value=2.0, step=0.5)
+invest_limit = st.sidebar.number_input("最大投入金额 ($)：", value=500.0, step=10.0)
+
+if min_price >= max_price:
+    st.sidebar.error("最低价格不能高于或等于最高价格")
+    st.stop()
+
+# 牛市价差策略模拟函数
 def simulate_bull_call_spreads(calls, price_range):
     results = []
     for i in range(len(calls)):
@@ -69,8 +90,8 @@ def simulate_bull_call_spreads(calls, price_range):
             })
     return sorted(results, key=lambda x: -x["Avg Return"])
 
-# ---------- 执行模拟 ----------
-if st.button("▶️ 开始模拟"):
+# 执行模拟按钮
+if st.button("▶️ 开始模拟牛市价差策略"):
     prices = np.arange(min_price, max_price + step, step)
     strategies = simulate_bull_call_spreads(calls, prices)
 
@@ -80,6 +101,8 @@ if st.button("▶️ 开始模拟"):
 
     best = strategies[0]
     st.subheader("🔥 最佳牛市价差策略")
+    st.markdown(f"**标的：** {symbol}")
+    st.markdown(f"**到期日：** {selected_exp}")
     st.markdown(f"**买入执行价：** ${best['Buy Strike']} Call")
     st.markdown(f"**卖出执行价：** ${best['Sell Strike']} Call")
     st.markdown(f"**成本：** ${best['Cost']:.2f}，最大收益：${best['Max Profit']:.2f}，盈亏平衡点：${best['Breakeven']:.2f}")
@@ -93,7 +116,7 @@ if st.button("▶️ 开始模拟"):
                       template="plotly_white")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 可选展示前几个组合
+    # 展示收益率前5的策略
     st.subheader("📋 收益率前5的策略：")
     top5 = pd.DataFrame(strategies[:5])
     st.dataframe(top5[["Buy Strike", "Sell Strike", "Cost", "Max Profit", "Breakeven", "Avg Return"]].round(2))
