@@ -1,22 +1,24 @@
 import streamlit as st
 import yfinance as yf
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
-from scipy.stats import norm
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Options Strategy Simulator", layout="wide")
+
 st.title("🧠 Options Strategy Simulator")
 
-# 初始化策略和持仓
+# 初始化
 if "strategies" not in st.session_state:
     st.session_state.strategies = []
 if "positions" not in st.session_state:
     st.session_state.positions = []
 
+# --- 左侧栏：标的、到期日、价格范围、策略配置 ---
 with st.sidebar:
     st.header("Underlying & Option Chain Configuration")
 
+    # 输入标的代码
     symbol = st.text_input("Enter stock symbol (e.g. AMD)", value="AMD").upper()
 
     expirations = []
@@ -40,35 +42,82 @@ with st.sidebar:
     max_price = st.number_input("Max strike price", value=200.0)
 
     st.markdown("---")
-    st.header("Strategy & Position Configuration")
+    st.header("Strategy Configuration")
 
     strategy_type = st.selectbox("Select strategy", [
-        "Sell Put", "Sell Call", "Bull Call Spread", "Straddle", "Iron Condor", "Covered Call"
+        "Sell Put", "Sell Call", "Bull Call Spread", "Straddle",
+        "Iron Condor", "Covered Call"
     ])
 
-    underlying_price = st.number_input("Current underlying price ($)", value=166.47)
+    underlying_price = 0.0
+    if ticker:
+        hist = ticker.history(period="1d")
+        if not hist.empty:
+            underlying_price = hist["Close"].iloc[-1]
 
-    strike1 = st.number_input("Strike price 1 ($)", value=160.0)
-    strike2 = None
-    strike3 = None
-    strike4 = None
+    st.write(f"Current underlying price: ${underlying_price:.2f}")
 
-    if strategy_type in ["Bull Call Spread", "Straddle", "Covered Call"]:
-        strike2 = st.number_input("Strike price 2 ($)", value=180.0)
-
+    # 输入执行价，依据策略类型
+    strike1 = st.number_input("Strike price 1 ($)", value=underlying_price*0.95 if underlying_price > 0 else 100.0)
+    strike2 = strike3 = strike4 = None
+    if strategy_type in ["Bull Call Spread", "Iron Condor", "Covered Call"]:
+        strike2 = st.number_input("Strike price 2 ($)", value=underlying_price*1.05 if underlying_price > 0 else 110.0)
     if strategy_type == "Iron Condor":
-        strike2 = st.number_input("Strike price 2 (Short Put) ($)", value=155.0)
-        strike3 = st.number_input("Strike price 3 (Short Call) ($)", value=175.0)
-        strike4 = st.number_input("Strike price 4 (Long Call) ($)", value=185.0)
-
-    option_price1 = st.number_input("Option price 1 ($)", value=2.3)
-    option_price2 = st.number_input("Option price 2 ($)", value=0.8) if strike2 else 0.0
-    option_price3 = st.number_input("Option price 3 ($)", value=0.5) if strike3 else 0.0
-    option_price4 = st.number_input("Option price 4 ($)", value=0.3) if strike4 else 0.0
+        strike3 = st.number_input("Strike price 3 ($)", value=underlying_price*1.10 if underlying_price > 0 else 115.0)
+        strike4 = st.number_input("Strike price 4 ($)", value=underlying_price*1.15 if underlying_price > 0 else 120.0)
 
     quantity = st.number_input("Number of contracts (100 shares each)", value=1, step=1)
 
+    st.markdown("---")
+
+    # 读取期权链数据（calls/puts）
+    calls, puts = None, None
+    if ticker and expiry:
+        try:
+            opt_chain = ticker.option_chain(expiry)
+            calls = opt_chain.calls
+            puts = opt_chain.puts
+            # 过滤执行价范围
+            calls = calls[(calls['strike'] >= min_price) & (calls['strike'] <= max_price)]
+            puts = puts[(puts['strike'] >= min_price) & (puts['strike'] <= max_price)]
+        except Exception as e:
+            st.error(f"Error fetching option chain data: {e}")
+
+    # 取价格函数：买入取ask，卖出取bid
+    def get_option_price(option_type, strike, is_buy=True):
+        df = calls if option_type == 'call' else puts
+        if df is None:
+            return 0.0
+        row = df[df['strike'] == strike]
+        if row.empty:
+            return 0.0
+        price = row['ask'].values[0] if is_buy else row['bid'].values[0]
+        return price if not pd.isna(price) else 0.0
+
+    # 点击按钮添加策略
     if st.button("➕ Add to strategy portfolio"):
+        price1 = price2 = price3 = price4 = 0.0
+
+        if strategy_type == "Sell Put":
+            price1 = get_option_price('put', strike1, is_buy=False)
+        elif strategy_type == "Sell Call":
+            price1 = get_option_price('call', strike1, is_buy=False)
+        elif strategy_type == "Bull Call Spread":
+            price1 = get_option_price('call', strike1, is_buy=True)
+            price2 = get_option_price('call', strike2, is_buy=False)
+        elif strategy_type == "Straddle":
+            price1 = get_option_price('call', strike1, is_buy=True)
+            price2 = get_option_price('put', strike1, is_buy=True)
+        elif strategy_type == "Iron Condor":
+            price1 = get_option_price('put', strike1, is_buy=True)
+            price2 = get_option_price('put', strike2, is_buy=False)
+            price3 = get_option_price('call', strike3, is_buy=False)
+            price4 = get_option_price('call', strike4, is_buy=True)
+        elif strategy_type == "Covered Call":
+            # Covered Call: Long stock + Sell call
+            price1 = 0.0  # No option price for stock
+            price2 = get_option_price('call', strike2, is_buy=False)
+
         st.session_state.strategies.append({
             "type": strategy_type,
             "underlying": underlying_price,
@@ -76,258 +125,198 @@ with st.sidebar:
             "strike2": strike2,
             "strike3": strike3,
             "strike4": strike4,
-            "price1": option_price1,
-            "price2": option_price2,
-            "price3": option_price3,
-            "price4": option_price4,
+            "price1": price1,
+            "price2": price2,
+            "price3": price3,
+            "price4": price4,
             "qty": quantity,
             "expiry": expiry
         })
 
     st.divider()
     st.subheader("Add Existing Stock Position")
-    cost_basis = st.number_input("Stock cost basis ($)", value=165.0)
-    shares = st.number_input("Number of shares held", value=100)
+    cost_basis = st.number_input("Stock cost basis ($)", value=underlying_price)
+    shares = st.number_input("Number of shares held", value=0)
     if st.button("📥 Add position"):
-        st.session_state.positions.append({"cost": cost_basis, "shares": shares})
+        if shares > 0:
+            st.session_state.positions.append({"cost": cost_basis, "shares": shares})
 
+# --- 主区 ---
 col1, col2 = st.columns([3, 2])
 
-# Option chain display on left
 with col1:
-    if expiry and ticker:
-        try:
-            opt_chain = ticker.option_chain(expiry)
-            calls = opt_chain.calls
-            puts = opt_chain.puts
+    if calls is not None and puts is not None:
+        st.subheader(f"{symbol} Calls (Strike {min_price} - {max_price}) expiring {expiry}")
+        st.dataframe(calls[['contractSymbol', 'strike', 'bid', 'ask', 'lastPrice', 'volume']])
 
-            calls_filtered = calls[(calls['strike'] >= min_price) & (calls['strike'] <= max_price)]
-            puts_filtered = puts[(puts['strike'] >= min_price) & (puts['strike'] <= max_price)]
-
-            st.subheader(f"Calls for {symbol} expiring on {expiry} (Strike {min_price} - {max_price})")
-            st.dataframe(calls_filtered[['contractSymbol', 'strike', 'bid', 'ask', 'lastPrice', 'volume']])
-
-            st.subheader(f"Puts for {symbol} expiring on {expiry} (Strike {min_price} - {max_price})")
-            st.dataframe(puts_filtered[['contractSymbol', 'strike', 'bid', 'ask', 'lastPrice', 'volume']])
-
-        except Exception as e:
-            st.error(f"Error fetching option chain data: {e}")
+        st.subheader(f"{symbol} Puts (Strike {min_price} - {max_price}) expiring {expiry}")
+        st.dataframe(puts[['contractSymbol', 'strike', 'bid', 'ask', 'lastPrice', 'volume']])
     else:
         st.info("Enter valid symbol and select expiration date to view option chain.")
 
-# Strategy profit & details on right
 with col2:
     st.subheader("📊 Strategy Profit Chart & Details")
 
     if st.session_state.strategies:
-        spot_range = np.linspace(underlying_price * 0.7, underlying_price * 1.3, 200)
+        spot_range = np.linspace(underlying_price * 0.7, underlying_price * 1.3, 300)
         total_pnl = np.zeros_like(spot_range)
 
-        strat = st.session_state.strategies[-1]
+        plt.figure(figsize=(8,5))
+        for strat in st.session_state.strategies:
+            pnl = np.zeros_like(spot_range)
+            mult = strat["qty"] * 100
 
-        strike1 = strat.get("strike1")
-        strike2 = strat.get("strike2")
-        strike3 = strat.get("strike3")
-        strike4 = strat.get("strike4")
-        price1 = strat.get("price1")
-        price2 = strat.get("price2")
-        price3 = strat.get("price3")
-        price4 = strat.get("price4")
-        qty = strat.get("qty")
-        strategy = strat.get("type")
+            # 计算每种策略收益（根据策略类型）
+            if strat["type"] == "Sell Put":
+                # Short put payoff
+                pnl = np.where(
+                    spot_range < strat["strike1"],
+                    (spot_range - strat["strike1"]) + strat["price1"],
+                    strat["price1"]
+                ) * mult
 
-        mult = qty * 100
-        pnl = np.zeros_like(spot_range)
+                profit_range = (strat["strike1"], np.inf)
 
-        if strategy == "Sell Put":
-            pnl = np.where(
-                spot_range < strike1,
-                (spot_range - strike1) + price1,
-                price1
-            ) * mult
+            elif strat["type"] == "Sell Call":
+                pnl = np.where(
+                    spot_range > strat["strike1"],
+                    (strat["strike1"] - spot_range) + strat["price1"],
+                    strat["price1"]
+                ) * mult
+                profit_range = (-np.inf, strat["strike1"])
 
-        elif strategy == "Sell Call":
-            pnl = np.where(
-                spot_range > strike1,
-                (strike1 - spot_range) + price1,
-                price1
-            ) * mult
-
-        elif strategy == "Bull Call Spread":
-            pnl = np.where(
-                spot_range <= strike1,
-                -price1 * mult,
-                np.where(
-                    spot_range >= strike2,
-                    (strike2 - strike1 - price1 + price2) * mult,
-                    ((spot_range - strike1) - price1 + price2) * mult
+            elif strat["type"] == "Bull Call Spread":
+                pnl = np.where(
+                    spot_range <= strat["strike1"],
+                    -strat["price1"] * mult,
+                    np.where(
+                        spot_range >= strat["strike2"],
+                        (strat["strike2"] - strat["strike1"] - strat["price1"] + strat["price2"]) * mult,
+                        ((spot_range - strat["strike1"]) - strat["price1"] + strat["price2"]) * mult
+                    )
                 )
-            )
+                profit_range = (strat["strike1"], strat["strike2"])
 
-        elif strategy == "Straddle":
-            pnl = (-np.abs(spot_range - strike1) + price1 + price2) * mult
+            elif strat["type"] == "Straddle":
+                pnl = (
+                    -np.abs(spot_range - strat["strike1"]) + strat["price1"] + strat["price2"]
+                ) * mult
+                profit_range = None
 
-        elif strategy == "Iron Condor":
-            put_long = np.where(
-                spot_range < strike1,
-                (strike1 - spot_range) - price1,
-                -price1
-            ) * mult
-            put_short = np.where(
-                (spot_range >= strike1) & (spot_range < strike2),
-                price2,
-                np.where(spot_range < strike1, price2 - (strike2 - spot_range), price2)
-            ) * mult * -1
-            call_short = np.where(
-                (spot_range > strike3) & (spot_range <= strike4),
-                price3,
-                np.where(spot_range > strike4, price3 - (spot_range - strike4), price3)
-            ) * mult * -1
-            call_long = np.where(
-                spot_range > strike4,
-                (spot_range - strike4) - price4,
-                -price4
-            ) * mult
+            elif strat["type"] == "Iron Condor":
+                # Iron condor = Long put1, short put2, short call3, long call4
+                put_long = np.where(
+                    spot_range < strat["strike1"],
+                    (spot_range - strat["strike1"]) + strat["price1"],
+                    strat["price1"]
+                ) * mult
 
-            pnl = put_long + put_short + call_short + call_long
+                put_short = np.where(
+                    spot_range < strat["strike2"],
+                    (strat["strike2"] - spot_range) + strat["price2"],
+                    strat["price2"]
+                ) * mult
 
-        elif strategy == "Covered Call":
-            stock_pnl = (spot_range - underlying_price) * qty * 100
-            call_short = np.where(
-                spot_range > strike2,
-                price2 - (spot_range - strike2),
-                price2
-            ) * qty * 100 * -1
-            pnl = stock_pnl + call_short
+                call_short = np.where(
+                    spot_range > strat["strike3"],
+                    (strat["strike3"] - spot_range) + strat["price3"],
+                    strat["price3"]
+                ) * mult
 
-        total_pnl += pnl
+                call_long = np.where(
+                    spot_range > strat["strike4"],
+                    (spot_range - strat["strike4"]) + strat["price4"],
+                    strat["price4"]
+                ) * mult
 
-        # 绘制策略盈亏图及标注执行价
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(spot_range, pnl, label=f"{strategy} PnL")
-        ax.axhline(0, linestyle="--", color="black")
+                pnl = put_long + put_short + call_short + call_long
+                profit_range = (strat["strike2"], strat["strike3"])
 
-        def mark_strike(ax, price, color, label):
-            if price is None:
-                return
-            ax.axvline(price, linestyle=":", color=color)
-            ylim = ax.get_ylim()
-            y_pos = ylim[1] * 0.95
-            ax.text(price, y_pos, f"{price:.2f}", color=color, rotation=90,
-                    verticalalignment='top', horizontalalignment='right',
-                    fontsize=9, fontweight='bold')
+            elif strat["type"] == "Covered Call":
+                # Covered call = long stock + short call
+                stock_pnl = (spot_range - strat["underlying"]) * strat["qty"] * 100
+                call_short = np.where(
+                    spot_range > strat["strike2"],
+                    (strat["strike2"] - spot_range) + strat["price2"],
+                    strat["price2"]
+                ) * strat["qty"] * 100
+                pnl = stock_pnl + call_short
+                profit_range = (-np.inf, strat["strike2"])
 
-        if strategy in ["Bull Call Spread", "Bear Put Spread"]:
-            mark_strike(ax, strike1, "green", "Long Strike")
-            mark_strike(ax, strike2, "red", "Short Strike")
-        elif strategy == "Iron Condor":
-            mark_strike(ax, strike1, "green", "Long Put")
-            mark_strike(ax, strike2, "lime", "Short Put")
-            mark_strike(ax, strike3, "orange", "Short Call")
-            mark_strike(ax, strike4, "red", "Long Call")
-        elif strategy == "Covered Call":
-            mark_strike(ax, strike1, "blue", "Stock Price")
-            mark_strike(ax, strike2, "red", "Short Call")
-        else:
-            mark_strike(ax, strike1, "blue", "Strike")
+            total_pnl += pnl
+            plt.plot(spot_range, pnl, label=f"{strat['type']} @ strikes {strat['strike1']}, {strat.get('strike2', '')}")
 
-        ax.set_xlabel("Underlying Price at Expiration")
-        ax.set_ylabel("Profit / Loss ($)")
-        ax.set_title(f"{strategy} PnL for {symbol}")
-        ax.legend()
-        st.pyplot(fig)
+        # 显示已有股票持仓盈亏
+        for pos in st.session_state.positions:
+            stock_pnl = (spot_range - pos["cost"]) * pos["shares"]
+            total_pnl += stock_pnl
+            plt.plot(spot_range, stock_pnl, linestyle="--", label="Stock Position P&L")
+
+        plt.plot(spot_range, total_pnl, label="Total Portfolio P&L", color="black", linewidth=2)
+        plt.axhline(0, color="gray", linestyle="--")
+        plt.axvline(underlying_price, color="red", linestyle=":", label="Current Price")
+        plt.xlabel("Underlying Price at Expiration")
+        plt.ylabel("Profit / Loss ($)")
+        plt.title("Strategy Payoff at Expiration")
+        plt.legend()
+        st.pyplot(plt.gcf())
         plt.clf()
 
-        # === 新增详细策略说明 ===
-        st.subheader("Strategy Details")
+        # 策略明细表（含期权价格、预期收益、收益概率、盈利区间）
+        details = []
+        for strat in st.session_state.strategies:
+            qty = strat["qty"] * 100
+            prices = [strat.get(f"price{i}", 0.0) for i in range(1,5)]
+            strikes = [strat.get(f"strike{i}", None) for i in range(1,5)]
 
-        def calc_profit_prob(underlying, cost, std_dev, low, high):
-            """基于正态分布估算标的价格在盈利区间内的概率"""
-            prob = norm.cdf(high, loc=underlying, scale=std_dev) - norm.cdf(low, loc=underlying, scale=std_dev)
-            return prob * 100  # %
+            # 计算成本 = 卖出价格减买入价格乘合约数量*100（假设买入期权取正，卖出期权取负）
+            # 预期收益及盈利区间简单估计
+            cost = 0.0
+            expected_profit = 0.0
+            profit_range = ""
 
-        # 计算隐含波动率标准差（日波动率*sqrt(days))
-        iv_estimate = 0.3  # 简单假设30%年化波动率
-        days_to_expiry = 30  # 固定30天，也可拓展为动态
-        std_dev = underlying_price * iv_estimate * np.sqrt(days_to_expiry / 252)
+            if strat["type"] == "Sell Put":
+                cost = prices[0] * qty
+                expected_profit = cost  # 收到权利金，亏损最大strike1-标的价*qty
+                profit_range = f"Price ≥ {strikes[0]:.2f}"
 
-        # 逐条输出期权操作
-        st.markdown("### Option Legs")
-        legs = []
+            elif strat["type"] == "Sell Call":
+                cost = prices[0] * qty
+                expected_profit = cost
+                profit_range = f"Price ≤ {strikes[0]:.2f}"
 
-        if strategy == "Sell Put":
-            legs.append(("Sell Put", strike1, price1))
+            elif strat["type"] == "Bull Call Spread":
+                cost = (prices[0] - prices[1]) * qty
+                max_profit = (strikes[1] - strikes[0]) * qty - cost
+                expected_profit = max_profit  # 简单近似
+                profit_range = f"{strikes[0]:.2f} ≤ Price ≤ {strikes[1]:.2f}"
 
-        elif strategy == "Sell Call":
-            legs.append(("Sell Call", strike1, price1))
+            elif strat["type"] == "Straddle":
+                cost = (prices[0] + prices[1]) * qty
+                expected_profit = None
+                profit_range = "Volatility plays a big role"
 
-        elif strategy == "Bull Call Spread":
-            legs.append(("Buy Call", strike1, price1))
-            legs.append(("Sell Call", strike2, price2))
+            elif strat["type"] == "Iron Condor":
+                cost = (prices[0] - prices[1] - prices[2] + prices[3]) * qty
+                expected_profit = None
+                profit_range = f"{strikes[1]:.2f} ≤ Price ≤ {strikes[2]:.2f}"
 
-        elif strategy == "Straddle":
-            legs.append(("Buy Call", strike1, price1))
-            legs.append(("Buy Put", strike1, price2))
+            elif strat["type"] == "Covered Call":
+                cost = - prices[1] * qty  # 收取卖call权利金
+                expected_profit = None
+                profit_range = f"Price ≤ {strikes[1]:.2f}"
 
-        elif strategy == "Iron Condor":
-            legs.append(("Buy Put", strike1, price1))
-            legs.append(("Sell Put", strike2, price2))
-            legs.append(("Sell Call", strike3, price3))
-            legs.append(("Buy Call", strike4, price4))
+            details.append({
+                "Strategy": strat["type"],
+                "Strike Prices": ', '.join([f"{s:.2f}" for s in strikes if s]),
+                "Option Prices (bid/ask used)": ', '.join([f"{p:.2f}" for p in prices if p > 0]),
+                "Qty (Contracts)": strat["qty"],
+                "Cost ($)": round(cost, 2),
+                "Expected Profit ($)": round(expected_profit, 2) if expected_profit is not None else "N/A",
+                "Profit Range": profit_range
+            })
 
-        elif strategy == "Covered Call":
-            legs.append(("Long Stock", underlying_price, 0))
-            legs.append(("Sell Call", strike2, price2))
-
-        df_legs = pd.DataFrame(legs, columns=["Operation", "Strike Price", "Option Price"])
-        st.dataframe(df_legs)
-
-        # 计算最大收益与成本
-        if strategy == "Sell Put":
-            max_profit = price1 * 100 * qty
-            breakeven = strike1 - price1
-            profit_low = breakeven
-            profit_high = 9999
-
-        elif strategy == "Sell Call":
-            max_profit = price1 * 100 * qty
-            breakeven = strike1 + price1
-            profit_low = 0
-            profit_high = breakeven
-
-        elif strategy == "Bull Call Spread":
-            max_profit = (strike2 - strike1 - price1 + price2) * 100 * qty
-            breakeven = strike1 + (price1 - price2)
-            profit_low = breakeven
-            profit_high = strike2
-
-        elif strategy == "Straddle":
-            max_profit = float('inf')  # 理论无上限
-            # 盈利区间两边，以净成本价上下波动
-            net_cost = price1 + price2
-            profit_low = strike1 - net_cost
-            profit_high = strike1 + net_cost
-
-        elif strategy == "Iron Condor":
-            max_profit = (price1 + price2 + price3 + price4) * 100 * qty
-            profit_low = strike2
-            profit_high = strike3
-
-        elif strategy == "Covered Call":
-            max_profit = price2 * 100 * qty + (strike2 - underlying_price) * 100 * qty
-            profit_low = 0
-            profit_high = strike2
-
-        else:
-            max_profit = 0
-            profit_low = 0
-            profit_high = 0
-
-        profit_prob = calc_profit_prob(underlying_price, max_profit, std_dev, profit_low, profit_high)
-
-        st.markdown(f"**Expected Max Profit:** ${max_profit:,.2f}")
-        st.markdown(f"**Profit Range:** ${profit_low:.2f} to ${profit_high:.2f}")
-        st.markdown(f"**Probability of Profit:** {profit_prob:.2f} %")
+        st.dataframe(pd.DataFrame(details))
 
     else:
         st.info("No strategies added yet.")
