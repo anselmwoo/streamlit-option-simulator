@@ -34,13 +34,15 @@ def bull_call_spread(calls):
             buy = calls.iloc[i]
             sell = calls.iloc[j]
             debit = buy['ask'] - sell['bid']
-            if debit <=0 or debit > invest_limit:
+            if debit <= 0 or debit > invest_limit:
                 continue
             max_profit = sell['strike'] - buy['strike'] - debit
             breakeven = buy['strike'] + debit
-            pnl = np.piecewise(prices,
-                               [prices <= buy['strike'], (prices > buy['strike']) & (prices < sell['strike']), prices >= sell['strike']],
-                               [-debit, prices - buy['strike'] - debit, max_profit])
+            pnl = np.piecewise(
+                prices,
+                [prices <= buy['strike'], (prices > buy['strike']) & (prices < sell['strike']), prices >= sell['strike']],
+                [lambda x: -debit, lambda x: x - buy['strike'] - debit, lambda x: max_profit]
+            )
             pos_prob = np.mean(pnl > 0)
             avg_return = np.mean(pnl / debit)
             res.append({'type':'Bull Call Spread',
@@ -53,6 +55,7 @@ def bull_call_spread(calls):
                         'pos_prob': pos_prob,
                         'avg_return': avg_return})
     return res
+
 
 def sell_put(puts):
     res = []
