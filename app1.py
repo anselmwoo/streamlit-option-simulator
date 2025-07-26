@@ -1,120 +1,130 @@
 import streamlit as st
-import yfinance as yf
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
 
-st.set_page_config(layout="wide")
-st.title("期权策略模拟器 with 策略筛选、交易成本 & 风险分析")
+st.set_page_config(page_title="期权策略模拟器", layout="wide")
 
-# 用户输入标的股票代码
-symbol = st.text_input("输入标的股票代码 (如 AMD)", value="AMD").upper()
-data = yf.Ticker(symbol)
+st.title("🧠 期权策略模拟器 - AMD 示例")
 
-# 显示可选的期权到期日
-try:
-    available_expirations = data.options
-    expiry = st.selectbox("选择期权到期日", available_expirations)
-except Exception as e:
-    st.error("未找到该股票的期权链，请确认股票代码是否正确")
-    st.stop()
+# 初始化
+if "strategies" not in st.session_state:
+    st.session_state.strategies = []
+if "positions" not in st.session_state:
+    st.session_state.positions = []
 
-# 获取期权链数据
-try:
-    opt_chain = data.option_chain(expiry)
-    calls = opt_chain.calls
-    puts = opt_chain.puts
-except ValueError as ve:
-    st.error(str(ve))
-    st.stop()
+# -------------------- 左侧：策略选择与持仓录入 --------------------
+with st.sidebar:
+    st.header("策略与持仓配置")
+    strategy_type = st.selectbox("选择策略", ["Sell Put", "Sell Call", "Bull Call Spread", "Straddle"])
 
-# 显示期权链数据
-with st.expander("📄 Call期权链"):
-    st.dataframe(calls[['strike', 'lastPrice', 'bid', 'ask', 'impliedVolatility', 'delta', 'gamma']])
+    st.subheader("参数输入")
+    underlying_price = st.number_input("当前标的价格 ($)", value=166.47)
+    strike1 = st.number_input("执行价 1 ($)", value=160.0)
+    strike2 = None
+    if strategy_type in ["Bull Call Spread", "Straddle"]:
+        strike2 = st.number_input("执行价 2 ($)", value=180.0)
 
-with st.expander("📄 Put期权链"):
-    st.dataframe(puts[['strike', 'lastPrice', 'bid', 'ask', 'impliedVolatility', 'delta', 'gamma']])
+    expiry_days = st.slider("到期天数", 7, 60, 30)
+    option_price1 = st.number_input("期权价格 1 ($)", value=2.3)
+    option_price2 = st.number_input("期权价格 2 ($)", value=0.8) if strike2 else 0.0
+    quantity = st.number_input("张数 (每张=100股)", value=1, step=1)
 
-# 用户输入现有持仓
-st.sidebar.subheader("📊 持仓信息")
-position_type = st.sidebar.selectbox("持仓类型", ["无持仓", "持有正股", "持有期权"])
-cost_basis = st.sidebar.number_input("成本价", value=0.0)
-shares_held = st.sidebar.number_input("持仓数量", value=0, step=1)
-
-# 模拟策略
-st.sidebar.subheader("📈 策略选择")
-strategy = st.sidebar.selectbox("选择策略", ["Bull Call Spread", "Sell Put", "Sell Call"])
-
-# 显示交易成本
-commission = st.sidebar.number_input("每笔交易手续费($)", value=1.0)
-
-# 策略函数
-
-def bull_call_spread(calls):
-    calls_sorted = calls.sort_values("strike")
-    if len(calls_sorted) < 2:
-        st.warning("Bull Call Spread需要至少两个不同执行价的Call期权")
-        return None
+    submit = st.button("➕ 添加到策略组合")
     
-    buy = calls_sorted.iloc[0]
-    sell = calls_sorted.iloc[-1]
-    debit = buy.ask - sell.bid
-    max_profit = sell.strike - buy.strike - debit
-    
-    prices = np.linspace(buy.strike * 0.9, sell.strike * 1.1, 100)
-    pnl = np.piecewise(prices,
-                       [prices <= buy.strike,
-                        (prices > buy.strike) & (prices < sell.strike),
-                        prices >= sell.strike],
-                       [-debit, lambda x: x - buy.strike - debit, max_profit])
-    return prices, pnl
+    if submit:
+        st.session_state.strategies.append({
+            "type": strategy_type,
+            "underlying": underlying_price,
+            "strike1": strike1,
+            "strike2": strike2,
+            "price1": option_price1,
+            "price2": option_price2,
+            "qty": quantity,
+            "expiry": expiry_days
+        })
 
-def sell_put(puts):
-    puts_sorted = puts.sort_values("strike")
-    sell = puts_sorted.iloc[0]
-    strike = sell.strike
-    premium = sell.bid
-    
-    prices = np.linspace(strike * 0.8, strike * 1.2, 100)
-    pnl = np.where(prices >= strike, premium, premium - (strike - prices))
-    return prices, pnl
+    st.divider()
+    st.subheader("已有持仓录入")
+    cost_basis = st.number_input("股票持仓成本 ($)", value=165.0)
+    shares = st.number_input("持仓股数", value=100)
+    if st.button("📥 添加持仓"):
+        st.session_state.positions.append({"cost": cost_basis, "shares": shares})
 
-def sell_call(calls):
-    calls_sorted = calls.sort_values("strike")
-    sell = calls_sorted.iloc[-1]
-    strike = sell.strike
-    premium = sell.bid
-    
-    prices = np.linspace(strike * 0.8, strike * 1.2, 100)
-    pnl = np.where(prices <= strike, premium, premium - (prices - strike))
-    return prices, pnl
+# -------------------- 中央区域：策略展示与收益计算 --------------------
+col1, col2 = st.columns([3, 2])
 
-# 执行策略模拟
-result = None
-if strategy == "Bull Call Spread":
-    result = bull_call_spread(calls)
-elif strategy == "Sell Put":
-    result = sell_put(puts)
-elif strategy == "Sell Call":
-    result = sell_call(calls)
+with col1:
+    st.subheader("📊 策略收益图")
+    spot_range = np.linspace(underlying_price * 0.7, underlying_price * 1.3, 200)
+    total_pnl = np.zeros_like(spot_range)
 
-# 可视化结果
-if result:
-    prices, pnl = result
-    fig, ax = plt.subplots()
-    ax.plot(prices, pnl, label=strategy)
-    ax.axhline(0, color='gray', linestyle='--')
-    ax.set_xlabel("标的价格")
-    ax.set_ylabel("收益 ($)")
-    ax.set_title(f"策略盈亏图 - {strategy}")
-    ax.legend()
-    st.pyplot(fig)
+    for strat in st.session_state.strategies:
+        pnl = np.zeros_like(spot_range)
+        mult = strat["qty"] * 100
 
-# 显示模拟结果表格
-if result:
-    df_result = pd.DataFrame({"标的价格": prices, "策略盈亏": pnl})
-    with st.expander("📊 策略模拟结果明细"):
-        st.dataframe(df_result.round(2))
+        if strat["type"] == "Sell Put":
+            pnl = np.where(
+                spot_range < strat["strike1"],
+                (spot_range - strat["strike1"]) + strat["price1"],
+                strat["price1"]
+            ) * mult
 
-# 模拟提示
-st.info("后续可添加更多策略、蒙特卡洛模拟与风险参数评估（IV、Delta等），并支持组合持仓管理")
+        elif strat["type"] == "Sell Call":
+            pnl = np.where(
+                spot_range > strat["strike1"],
+                (strat["strike1"] - spot_range) + strat["price1"],
+                strat["price1"]
+            ) * mult
+
+        elif strat["type"] == "Bull Call Spread":
+            pnl = np.where(
+                spot_range <= strat["strike1"],
+                -strat["price1"] * mult,
+                np.where(
+                    spot_range >= strat["strike2"],
+                    (strat["strike2"] - strat["strike1"] - strat["price1"] + strat["price2"]) * mult,
+                    ((spot_range - strat["strike1"]) - strat["price1"] + strat["price2"]) * mult
+                )
+            )
+
+        elif strat["type"] == "Straddle":
+            pnl = (
+                -np.abs(spot_range - strat["strike1"]) + strat["price1"] + strat["price2"]
+            ) * mult
+
+        total_pnl += pnl
+        plt.plot(spot_range, pnl, label=strat["type"])
+
+    for pos in st.session_state.positions:
+        stock_pnl = (spot_range - pos["cost"]) * pos["shares"]
+        total_pnl += stock_pnl
+        plt.plot(spot_range, stock_pnl, linestyle="--", label="持仓盈亏")
+
+    plt.plot(spot_range, total_pnl, label="组合总盈亏", color="black", linewidth=2)
+    plt.axhline(0, color="gray", linestyle="--")
+    plt.axvline(underlying_price, color="red", linestyle=":", label="当前价格")
+    plt.legend()
+    plt.xlabel("到期时标的价格")
+    plt.ylabel("策略盈亏 ($)")
+    st.pyplot(plt.gcf())
+    plt.clf()
+
+with col2:
+    st.subheader("📋 策略明细与打分")
+    df = pd.DataFrame(st.session_state.strategies)
+    if not df.empty:
+        df_display = df.copy()
+        df_display["成本"] = (df_display["price1"] - df_display["price2"]).fillna(df_display["price1"]) * 100
+        df_display["最大收益"] = np.where(
+            df_display["type"] == "Bull Call Spread",
+            (df_display["strike2"] - df_display["strike1"]) * 100 - df_display["成本"],
+            df_display["price1"] * 100
+        )
+        df_display["回报率"] = (df_display["最大收益"] / df_display["成本"]).round(2)
+        df_display["策略评分"] = (df_display["回报率"] * 0.6 + df_display["最大收益"] / 100 * 0.4).round(1)
+        st.dataframe(df_display[["type", "strike1", "strike2", "成本", "最大收益", "回报率", "策略评分"]])
+    else:
+        st.info("尚未添加任何策略。")
+
+st.caption("⚠️ 本工具为教学与模拟用途，不构成投资建议。")
