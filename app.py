@@ -6,7 +6,7 @@ import plotly.graph_objs as go
 
 st.set_page_config(page_title="期权策略模拟器", layout="wide")
 
-st.title("📈 期权策略模拟器（收益率优化）")
+st.title("📈 期权策略模拟器（多策略支持）")
 
 # 用户输入标的代码
 symbol = st.text_input("请输入标的股票代码（如 AMD、AAPL、TSLA）:", value="AMD").upper()
@@ -42,8 +42,9 @@ st.dataframe(puts[['strike', 'bid', 'ask', 'impliedVolatility']].rename(columns=
     'strike': '执行价', 'bid': '买价', 'ask': '卖价', 'impliedVolatility': '隐含波动率'
 }))
 
-# 模拟参数输入
+# 侧边栏：模拟参数和持仓输入
 st.sidebar.header("模拟参数设置")
+
 min_price = st.sidebar.number_input("模拟价格区间（最低）", value=90.0, step=0.5)
 max_price = st.sidebar.number_input("模拟价格区间（最高）", value=140.0, step=0.5)
 step = st.sidebar.number_input("价格间隔", value=2.0, step=0.5)
@@ -53,7 +54,17 @@ if min_price >= max_price:
     st.sidebar.error("最低价格不能高于或等于最高价格")
     st.stop()
 
-# 牛市价差策略模拟函数
+# 新增：选择策略类型（当前只有Bull Call Spread，方便以后扩展）
+strategy_type = st.sidebar.selectbox("选择策略类型", options=[
+    "Bull Call Spread"
+])
+
+# 新增：用户输入现有持仓和持仓成本
+st.sidebar.header("持仓信息输入")
+current_position = st.sidebar.number_input("现有持仓股数（正数表示多头，负数表示空头）", value=0, step=100)
+position_cost = st.sidebar.number_input("持仓平均成本 ($/股)", value=0.0, step=0.1)
+
+# 策略模拟函数
 def simulate_bull_call_spreads(calls, price_range):
     results = []
     for i in range(len(calls)):
@@ -90,23 +101,37 @@ def simulate_bull_call_spreads(calls, price_range):
             })
     return sorted(results, key=lambda x: -x["Avg Return"])
 
-# 执行模拟按钮
-if st.button("▶️ 开始模拟牛市价差策略"):
+# 运行模拟
+if st.button("▶️ 开始模拟"):
     prices = np.arange(min_price, max_price + step, step)
-    strategies = simulate_bull_call_spreads(calls, prices)
+
+    if strategy_type == "Bull Call Spread":
+        strategies = simulate_bull_call_spreads(calls, prices)
+    else:
+        st.error("暂时只支持 Bull Call Spread 策略")
+        st.stop()
 
     if not strategies:
-        st.warning("未找到合适的牛市价差策略组合。")
+        st.warning("未找到合适的策略组合。")
         st.stop()
 
     best = strategies[0]
-    st.subheader("🔥 最佳牛市价差策略")
+    st.subheader("🔥 最佳策略")
+
     st.markdown(f"**标的：** {symbol}")
     st.markdown(f"**到期日：** {selected_exp}")
+    st.markdown(f"**策略类型：** {strategy_type}")
     st.markdown(f"**买入执行价：** ${best['Buy Strike']} Call")
     st.markdown(f"**卖出执行价：** ${best['Sell Strike']} Call")
     st.markdown(f"**成本：** ${best['Cost']:.2f}，最大收益：${best['Max Profit']:.2f}，盈亏平衡点：${best['Breakeven']:.2f}")
     st.markdown(f"**平均收益率：** {best['Avg Return']*100:.2f}%")
+
+    # 持仓盈亏示例展示（持仓股数和成本）
+    if current_position != 0:
+        current_price = prices[-1]  # 取价格区间最高价做示例
+        pos_pnl = (current_price - position_cost) * current_position
+        st.markdown(f"**当前持仓：** {current_position} 股，成本 ${position_cost:.2f}，假设当前价格 ${current_price:.2f}")
+        st.markdown(f"**持仓盈亏估计：** ${pos_pnl:.2f}")
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=prices, y=best["PnL"], mode='lines+markers', name='策略PnL'))
@@ -116,7 +141,7 @@ if st.button("▶️ 开始模拟牛市价差策略"):
                       template="plotly_white")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 展示收益率前5的策略
-    st.subheader("📋 收益率前5的策略：")
+    # 展示收益率前5策略
+    st.subheader("📋 收益率前5策略")
     top5 = pd.DataFrame(strategies[:5])
     st.dataframe(top5[["Buy Strike", "Sell Strike", "Cost", "Max Profit", "Breakeven", "Avg Return"]].round(2))
