@@ -3,9 +3,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-matplotlib.rcParams['font.family'] = 'Microsoft YaHei'
-matplotlib.rcParams['axes.unicode_minus'] = False
-
 st.set_page_config(page_title="期权策略模拟器", layout="wide")
 
 st.title("🧠 期权策略模拟器 - AMD 示例")
