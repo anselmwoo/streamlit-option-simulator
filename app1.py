@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Options Strategy Simulator", layout="wide")
 
-st.title("🧠 Options Strategy Simulator - AMD Example")
+st.title("🧠 Options Strategy Simulator")
 
 # 初始化策略和持仓
 if "strategies" not in st.session_state:
