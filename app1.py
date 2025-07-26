@@ -10,7 +10,7 @@ st.set_page_config(page_title="Option Strategy Simulator", layout="wide")
 
 # 用户输入
 symbol = st.sidebar.text_input("Enter Ticker", value="AMD")
-expiry = st.sidebar.text_input("Option Expiry (YYYY-MM-DD)", value="2024-08-16")
+# expiry = st.sidebar.text_input("Option Expiry (YYYY-MM-DD)", value="2024-08-16")
 invest_limit = st.sidebar.number_input("Max Cost ($)", value=100.0)
 cost_per_trade = st.sidebar.number_input("Transaction Cost per Leg ($)", value=1.0)
 simulations = st.sidebar.slider("Monte Carlo Simulations", 1000, 20000, 5000)
@@ -18,6 +18,14 @@ user_position = st.sidebar.text_area("User Holdings (e.g., CALL 110C +1, PUT 90P
 
 # 拉取数据
 data = yf.Ticker(symbol)
+available_expirations = data.options
+
+# 让用户选择到期日（推荐）
+expiry = st.selectbox("选择期权到期日", available_expirations)
+if expiry not in available_expirations:
+    st.error(f"错误：{expiry} 不是有效的到期日。请选择一个有效到期日。")
+    st.stop()
+    
 opt_chain = data.option_chain(expiry)
 calls = opt_chain.calls.copy()
 puts = opt_chain.puts.copy()
