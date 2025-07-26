@@ -1,103 +1,145 @@
 import streamlit as st
-import yfinance as yf
+import requests
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
-import datetime
 
-st.set_page_config(layout="wide")
-st.title("期权策略模拟器（支持多策略组合分析）")
+# Tradier API
+TRADIER_TOKEN = 'YOUR_TRADIER_API_KEY'
+HEADERS = {'Authorization': f'Bearer {TRADIER_TOKEN}', 'Accept': 'application/json'}
+BASE_URL = 'https://api.tradier.com/v1/markets/options'
 
-# ------------------------- 获取用户输入 -------------------------
-st.sidebar.header("选择参数")
-ticker = st.sidebar.text_input("输入股票代码 (如 AMD):", value="AMD")
+# 设置页面布局
+st.set_page_config(page_title="Option Strategy Simulator", layout="wide")
 
-try:
-    stock = yf.Ticker(ticker)
-    current_price = stock.history(period="1d")["Close"].iloc[-1]
-    options_dates = stock.options
-except:
-    st.error("获取标的信息失败，请检查代码是否正确。")
+# 侧栏：标的与到期日
+st.sidebar.title("📈 Option Strategy Simulator")
+symbol = st.sidebar.text_input("Symbol", value="AMD").upper()
+
+# 拉取可用到期日
+@st.cache_data(show_spinner=False)
+def get_expirations(symbol):
+    url = f"{BASE_URL}/expirations"
+    params = {"symbol": symbol, "includeAllRoots": "true", "strikes": "false"}
+    r = requests.get(url, headers=HEADERS, params=params)
+    data = r.json()
+    return data['expirations']['date'] if 'expirations' in data else []
+
+expirations = get_expirations(symbol)
+if not expirations:
+    st.error("Failed to fetch expirations.")
     st.stop()
 
-exp_date = st.sidebar.selectbox("选择到期日:", options_dates)
-min_strike = st.sidebar.number_input("最小执行价", value=int(current_price * 0.5))
-max_strike = st.sidebar.number_input("最大执行价", value=int(current_price * 1.5))
+expiration = st.sidebar.selectbox("Expiration Date", expirations)
 
-# ------------------------- 获取期权链 -------------------------
-opt_chain = stock.option_chain(exp_date)
-call_df = opt_chain.calls.copy()
-put_df = opt_chain.puts.copy()
+# 拉取期权链
+@st.cache_data(show_spinner=False)
+def get_option_chain(symbol, expiration):
+    url = f"{BASE_URL}/chains"
+    params = {"symbol": symbol, "expiration": expiration, "greeks": "true"}
+    r = requests.get(url, headers=HEADERS, params=params)
+    data = r.json()
+    if "options" not in data or not data["options"]:
+        return pd.DataFrame()
+    options = data["options"]["option"]
+    return pd.DataFrame(options)
 
-# 过滤价格范围
-call_df = call_df[(call_df["strike"] >= min_strike) & (call_df["strike"] <= max_strike)]
-put_df = put_df[(put_df["strike"] >= min_strike) & (put_df["strike"] <= max_strike)]
+df = get_option_chain(symbol, expiration)
+if df.empty:
+    st.error("No options data found.")
+    st.stop()
 
-st.subheader(f"Call / Put 期权链数据 - 到期日: {exp_date}")
-st.dataframe(pd.concat([call_df[['strike', 'bid', 'ask', 'impliedVolatility']].rename(columns={'bid': 'Call Bid', 'ask': 'Call Ask', 'impliedVolatility': 'Call IV'}),
-                        put_df[['strike', 'bid', 'ask', 'impliedVolatility']].rename(columns={'bid': 'Put Bid', 'ask': 'Put Ask', 'impliedVolatility': 'Put IV'})],
-                       axis=1))
+# 拆分 call/put，修复重复列问题
+call_df = df[df['option_type'] == 'call'].copy()
+put_df = df[df['option_type'] == 'put'].copy()
 
-# ------------------------- 策略模拟 -------------------------
-st.subheader("策略收益模拟与评分")
-def simulate_strategy(s, k1, k2, option_type, cost):
-    # s: spot price
-    # k1: 买入价，k2: 卖出价
-    prices = np.linspace(s * 0.5, s * 1.5, 100)
-    if option_type == "Bull Call Spread":
-        payoff = np.maximum(prices - k1, 0) - np.maximum(prices - k2, 0) - cost
-    elif option_type == "Bear Put Spread":
-        payoff = np.maximum(k2 - prices, 0) - np.maximum(k1 - prices, 0) - cost
-    elif option_type == "Covered Call":
-        payoff = np.minimum(k1 - s, 0) + np.minimum(np.maximum(prices - k1, 0), k1 - s)
-    else:
-        payoff = np.zeros_like(prices)
+# 保证唯一 strike
+merged = pd.merge(
+    call_df[['strike', 'bid', 'ask', 'implied_volatility']].rename(
+        columns={'bid': 'Call Bid', 'ask': 'Call Ask', 'implied_volatility': 'Call IV'}
+    ),
+    put_df[['strike', 'bid', 'ask', 'implied_volatility']].rename(
+        columns={'bid': 'Put Bid', 'ask': 'Put Ask', 'implied_volatility': 'Put IV'}
+    ),
+    on='strike', how='outer'
+).sort_values(by='strike')
+
+st.subheader(f"{symbol} Option Chain for {expiration}")
+st.dataframe(merged, use_container_width=True)
+
+# 计算当前股价（近月 ATM）
+atm_strike = df.iloc[df['strike'].sub(float(df['last'])).abs().idxmin()]['strike']
+spot_price = float(df[df['strike'] == atm_strike].iloc[0]['last'])
+
+# 策略生成示例（Covered Call）
+def simulate_covered_call(call_row, spot):
+    call_strike = call_row['strike']
+    call_bid = call_row['bid']
+    payoff = []
+
+    prices = np.linspace(spot * 0.7, spot * 1.3, 100)
+    for price in prices:
+        stock_pnl = price - spot
+        option_pnl = -max(price - call_strike, 0) + call_bid
+        payoff.append(stock_pnl + option_pnl)
+
     return prices, payoff
 
-# 遍历生成 Bull Call Spread 组合
+st.subheader("🧠 Strategy Simulation")
+strategy_type = st.selectbox("Strategy Type", ["Covered Call", "Protective Put", "Iron Condor (Coming Soon)"])
+
+# 自动选择几组执行价
 strategies = []
-for i in range(len(call_df)):
-    for j in range(i + 1, len(call_df)):
-        k1, k2 = call_df.iloc[i]['strike'], call_df.iloc[j]['strike']
-        buy_cost = (call_df.iloc[i]['ask'] + call_df.iloc[i]['bid']) / 2
-        sell_credit = (call_df.iloc[j]['ask'] + call_df.iloc[j]['bid']) / 2
-        net_cost = buy_cost - sell_credit
-        prices, payoff = simulate_strategy(current_price, k1, k2, "Bull Call Spread", net_cost)
-        max_profit = np.max(payoff)
-        prob_profit = norm.cdf((k2 - current_price) / (current_price * 0.2))  # 简单估算
-        score = max_profit / net_cost if net_cost > 0 else 0
+
+if strategy_type == "Covered Call":
+    filtered_calls = call_df[(call_df['strike'] > spot_price * 0.95) & (call_df['strike'] < spot_price * 1.1)].copy()
+    filtered_calls = filtered_calls.sort_values('strike')
+
+    for _, row in filtered_calls.iterrows():
+        prices, payoff = simulate_covered_call(row, spot_price)
+        mean_pnl = np.mean(payoff)
+        std_pnl = np.std(payoff)
+        sharpe = mean_pnl / std_pnl if std_pnl > 0 else 0
         strategies.append({
-            "策略": f"Buy {k1}C / Sell {k2}C",
-            "类型": "Bull Call Spread",
-            "成本": round(net_cost, 2),
-            "最大收益": round(max_profit, 2),
-            "盈利概率": f"{prob_profit * 100:.1f}%",
-            "得分": round(score, 2),
-            "图": (prices, payoff)
+            'Strategy': f'Covered Call @ {row["strike"]}',
+            'Call Strike': row['strike'],
+            'Call Bid': row['bid'],
+            'Mean PnL': round(mean_pnl, 2),
+            'Sharpe': round(sharpe, 2),
+            'Prices': prices,
+            'Payoff': payoff
         })
 
-strategy_df = pd.DataFrame(strategies)
-st.dataframe(strategy_df.sort_values("得分", ascending=False).reset_index(drop=True))
+if strategies:
+    strat_df = pd.DataFrame(strategies).drop(columns=['Prices', 'Payoff'])
+    selected = st.selectbox("Select Strategy to Visualize", strat_df['Strategy'])
+    st.dataframe(strat_df, use_container_width=True)
 
-selected_idx = st.selectbox("选择策略查看收益图:", strategy_df.index, format_func=lambda i: strategy_df.loc[i, "策略"])
+    # 画图
+    for strat in strategies:
+        if strat['Strategy'] == selected:
+            fig, ax = plt.subplots()
+            ax.plot(strat['Prices'], strat['Payoff'], label=selected, color='blue')
+            ax.axhline(0, linestyle='--', color='gray')
+            ax.set_title(f"Payoff Diagram: {selected}")
+            ax.set_xlabel("Underlying Price at Expiry")
+            ax.set_ylabel("Profit / Loss")
+            st.pyplot(fig)
 
-# ------------------------- 绘制图表 -------------------------
-fig, ax = plt.subplots(figsize=(10, 4))
-plot_prices, plot_payoff = strategy_df.loc[selected_idx, "图"]
-ax.plot(plot_prices, plot_payoff, label=strategy_df.loc[selected_idx, "策略"])
-ax.axvline(current_price, color='r', linestyle='--', label='现价')
-ax.set_xlabel("股价")
-ax.set_ylabel("收益")
-ax.set_title("策略收益曲线")
-ax.legend()
-st.pyplot(fig)
+            # 模拟价格概率分布（正态近似）
+            fig2, ax2 = plt.subplots()
+            price_range = np.linspace(spot_price * 0.7, spot_price * 1.3, 100)
+            mu, sigma = spot_price, spot_price * 0.2  # 假设波动率 20%
+            prob = norm.pdf(price_range, mu, sigma)
+            prob = prob / prob.sum()  # 归一化
 
-# ------------------------- 未来计划 -------------------------
-st.markdown("""
-**📌 后续功能规划：**
-- 支持更多策略类型（Iron Condor、Straddle 等）
-- 更精细的希腊值计算与Delta-Gamma可视化
-- 支持导入持仓、进行组合风险敞口分析
-- 自动推荐最优策略
-""")
+            expected = np.array(strat['Payoff']) * prob
+            expected_return = expected.sum()
+
+            ax2.plot(strat['Prices'], strat['Payoff'], label="Payoff", color='blue')
+            ax2.fill_between(strat['Prices'], 0, prob * max(strat['Payoff']), color='orange', alpha=0.3, label="Price Probability")
+            ax2.set_title("Profit & Probability Distribution")
+            ax2.legend()
+            st.pyplot(fig2)
+            st.success(f"Expected Return (Prob-Weighted): ${expected_return:.2f}")
